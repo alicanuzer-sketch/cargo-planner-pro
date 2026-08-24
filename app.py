@@ -5,6 +5,7 @@ import matplotlib.patches as patches
 import plotly.graph_objects as go
 from dataclasses import dataclass
 from typing import List
+from itertools import permutations
 import io
 
 from reportlab.lib.pagesizes import letter
@@ -15,7 +16,7 @@ from reportlab.lib import colors as rl_colors
 # ============================================================
 # CONFIG & PROFESSIONAL STYLING
 # ============================================================
-st.set_page_config(page_title="Cargo Planner Pro", page_icon="📦", layout="wide")
+st.set_page_config(page_title="LoadSketch", page_icon="📦", layout="wide")
 
 st.markdown("""
     <style>
@@ -38,11 +39,18 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🚢 Cargo Planner Pro - Yükleme Simülasyonu")
-st.caption("Endüstriyel Özel Ekipman (Flat Rack & Open Top) Yük Planlama ve 3D Görselleştirme")
+st.title("📦 LoadSketch")
+st.caption("Ölçüleri girin; Flat Rack ve Open Top için olası yerleşim fikirlerini 2D ve 3D olarak görün.")
+
+st.info(
+    "ℹ️ Bu araç yalnızca ön planlama ve görselleştirme amacıyla bir yerleşim fikri üretir. "
+    "Çıktılar resmi yükleme, lashing/securing, mühendislik hesabı veya taşıyıcı onayı değildir. "
+    "Nihai uygulama öncesinde ekipman ve operasyon detayları ilgili taraflarla ayrıca doğrulanmalıdır."
+)
+
 
 # ============================================================
-# DATA MODELS & HAPAG REMARKS
+# DATA MODELS & GENERAL PLANNING NOTES
 # ============================================================
 @dataclass
 class Cargo:
@@ -66,24 +74,24 @@ class Placement:
     stack_layer: int
     max_stack: int
 
-HAPAG_REMARKS = {
+GENERAL_PLANNING_NOTES = {
     "Flat Rack": [
-        "📌 **Planning Length Rule:** 20' FR için 5.50 m, 40' FR / 40' HC FR için 11.60 m üzerindeki parça otomatik olarak uygun değildir.",
-        "📌 **OOG Width:** 2.43 m taban genişliğini aşan yükler Enden Taşmalı (OOG Width) olarak raporlanır; taban temas oranı ayrıca kontrol edilir.",
-        "📌 **OOG Height:** Ekipmanın gauge/dikme yüksekliğini aşan yükler Üstten Taşmalı (OOG Top) olarak raporlanır; yalnızca yükseklik nedeniyle reddedilmez.",
-        "📌 **Planning Support Rule:** Zemine oturan FR yüklerinde minimum %60 taban temas oranı aranır.",
+        "📌 **Yerleşim sınırı:** 20' FR için 5.50 m, 40' FR / 40' HC FR için 11.60 m üzerindeki tek parçalar bu otomatik yerleşim hesabına dahil edilmez.",
+        "📌 **Tahmini yan taşma:** 2.43 m taban genişliğini aşan kısımlar görselde ve tabloda yaklaşık taşma olarak gösterilir.",
+        "📌 **Tahmini üst taşma:** Ekipmanın referans yüksekliğini aşan kısım yaklaşık üst taşma olarak gösterilir; yalnızca yükseklik nedeniyle yerleşim önerisi durdurulmaz.",
+        "📌 **Uygulama içi planlama kuralı:** Zemine oturan FR yüklerinde en az %60 taban teması aranır. Bu, resmi yapısal veya securing hesabı değildir.",
     ],
     "Open Top": [
-        "📌 **Top Loading Access:** Her tek parça, seçilen OT'nin roof opening uzunluk ve genişliğinden üstten geçebilmelidir.",
-        "📌 **Multi-piece Stowage:** Roof opening yalnızca giriş limitidir; parçalar içeri alındıktan sonra internal floor alanında nihai pozisyonlarına yerleştirilebilir.",
-        "📌 **OOG Height:** Gauge yüksekliğini aşmak yüklemeyi engellemez; aşım yalnızca Top OOG olarak raporlanır.",
-        "📌 **Loading/Lashing Sequence:** Çok parçalı OT planı, parçaların sırayla yüklenip pozisyonlandıktan sonra lash edilmesi varsayımıyla hazırlanır.",
+        "📌 **Üstten giriş:** Her tek parçanın seçilen OT'nin tanımlı tavan açıklığından geçebildiği varsayılır.",
+        "📌 **Çok parçalı yerleşim:** Tavan açıklığı giriş için kullanılır; parçalar içeri alındıktan sonra tanımlı iç taban alanında farklı nihai pozisyonlara yerleştirilebilir.",
+        "📌 **Tahmini üst taşma:** Referans yüksekliğini aşan kısım yaklaşık üst taşma olarak gösterilir; yükseklik tek başına yerleşim önerisini engellemez.",
+        "📌 **Operasyon notu:** Yükleme sırası, erişim, bedding, lashing ve securing bu araç tarafından doğrulanmaz ve ayrıca değerlendirilmelidir.",
     ]
 }
 
 # Planning limits. OT internal floor values are conservative rounded-down values
-# derived from Hapag-Lloyd example equipment dimensions; roof/door/payload limits
-# follow the user-defined planning limits.
+# used by the application as conservative planning parameters.
+# These values are planning inputs, not carrier-specific acceptance criteria.
 EQUIPMENT_PROFILES = {
     "20ft Flat Rack": {
         "dl": 5.50, "dw": 2.43, "dh": 2.20, "max_w": 42000.0,
@@ -256,40 +264,89 @@ def orientation_allowed_for_equipment(cl: float, cw: float, profile: dict):
     return cl <= roof_l + 0.0001 and cw <= roof_w + 0.0001
 
 
-def pack_cargo_3d(cargos: List[Cargo], profile: dict, allow_rotation=True):
+def _candidate_points(placements: List[Placement], cl: float, cw: float, ch: float, profile: dict):
+    """Generate 3D extreme-point candidates from combinations of existing X/Y edges.
+
+    The previous engine only paired X and Y coordinates from the same cargo. That
+    misses valid layouts such as X=edge of Cargo A + Y=edge of Cargo B. This
+    Cartesian extreme-point set is the key fix for mixed side-by-side / end-to-end
+    Flat Rack plans.
+    """
+    dl = profile["dl"]
+    dw = profile["dw"]
+    is_flat_rack = profile["is_flat_rack"]
+
+    x_coords = {0.0}
+    z_coords = {0.0}
+
+    for p in placements:
+        x_coords.add(round(p.x, 6))
+        x_coords.add(round(p.x + p.l, 6))
+        # Also allow filling a gap immediately before an existing cargo.
+        x_coords.add(round(p.x - cl, 6))
+        z_coords.add(round(p.z + p.h, 6))
+
+    # Over-width FR cargo is kept centered transversely. It cannot share an X
+    # span with another deck cargo anyway, so searching multiple Y positions
+    # adds no useful solution and can create unrealistic asymmetry.
+    if is_flat_rack and cw > dw + 0.0001:
+        y_coords = {round((dw - cw) / 2.0, 6)}
+    else:
+        y_coords = {0.0}
+        for p in placements:
+            y_coords.add(round(p.y, 6))
+            y_coords.add(round(p.y + p.w, 6))
+            y_coords.add(round(p.y - cw, 6))
+
+    points = []
+    for z in z_coords:
+        for x in x_coords:
+            for y in y_coords:
+                if x < -0.0001:
+                    continue
+                if x + cl > dl + 0.0001:
+                    continue
+                if not is_flat_rack and (y < -0.0001 or y + cw > dw + 0.0001):
+                    continue
+                points.append((round(x, 6), round(y, 6), round(z, 6)))
+
+    # Prefer floor placements, then compact X usage, then lower OOG / more
+    # centered transverse positions. This keeps the output deterministic.
+    deck_center = dw / 2.0
+    def sort_key(pt):
+        x, y, z = pt
+        left_oog = max(0.0, -y)
+        right_oog = max(0.0, y + cw - dw)
+        oog = left_oog + right_oog
+        center_offset = abs((y + cw / 2.0) - deck_center)
+        return (z, x, round(oog, 6), round(center_offset, 6), y)
+
+    return sorted(set(points), key=sort_key)
+
+
+def _pack_cargo_in_order(cargos_in_order: List[Cargo], profile: dict, allow_rotation=True):
+    """Greedy placement for one specific cargo order."""
     placements: List[Placement] = []
     unplaced = []
     current_weight = 0.0
 
-    dl = profile["dl"]          # FR usable deck length / OT internal floor length
-    dw = profile["dw"]          # FR deck width / OT internal floor width
+    dl = profile["dl"]
+    dw = profile["dw"]
     max_w = profile["max_w"]
     is_flat_rack = profile["is_flat_rack"]
 
-    # Larger / heavier items first.
-    sorted_cargos = sorted(
-        cargos,
-        key=lambda c: (c.length * c.width * c.height, c.weight),
-        reverse=True,
-    )
-
-    for cargo in sorted_cargos:
-        # Height is intentionally NOT a rejection criterion for FR or OT.
-        # It is reported later as Top OOG against profile["dh"].
+    for cargo in cargos_in_order:
         if current_weight + cargo.weight > max_w + 0.0001:
             unplaced.append(cargo)
             continue
-
-        placed = False
-        orientations = []
 
         raw_orientations = [(cargo.length, cargo.width)]
         if allow_rotation and abs(cargo.length - cargo.width) > 0.0001:
             raw_orientations.append((cargo.width, cargo.length))
 
+        orientations = []
         for cl, cw in raw_orientations:
             if orientation_allowed_for_equipment(cl, cw, profile):
-                # avoid duplicate orientation pairs
                 if not any(abs(cl-a) < 1e-6 and abs(cw-b) < 1e-6 for a, b in orientations):
                     orientations.append((cl, cw))
 
@@ -297,64 +354,28 @@ def pack_cargo_3d(cargos: List[Cargo], profile: dict, allow_rotation=True):
             unplaced.append(cargo)
             continue
 
+        # Prefer the cargo's original orientation. Rotation is an alternative,
+        # not the first choice, unless it is the only feasible orientation.
+        placed = False
         for cl, cw in orientations:
-            if is_flat_rack:
-                # OOG-width cargo is centered on deck. In-gauge cargo may start at Y=0
-                # and may also use side-by-side candidate positions below.
-                if cw > dw:
-                    y_positions = [(dw - cw) / 2.0]
-                else:
-                    y_positions = [0.0]
-            else:
-                # OT final position uses the INTERNAL floor, not the roof opening.
-                # Every cargo has already passed the roof-opening test above.
-                y_positions = [0.0]
-
-            candidate_points = [(0.0, y_pos, 0.0) for y_pos in y_positions]
-
-            for p in placements:
-                for y_pos in y_positions:
-                    candidate_points.extend([
-                        (p.x + p.l, y_pos, p.z),
-                        (p.x, y_pos, p.z + p.h),
-                    ])
-
-                    # side-by-side candidate inside the physical deck/floor
-                    if cw <= dw:
-                        candidate_points.append((p.x, p.y + p.w, p.z))
-
-            candidate_points = sorted(
-                list(set(candidate_points)),
-                key=lambda pt: (pt[0], pt[1], pt[2]),
-            )
-
-            for pt_x, pt_y, pt_z in candidate_points:
-                # STRICT FINAL X BOUNDARY:
-                # FR cannot use overlength space at all; OT final cargo must stay in internal floor length.
-                if pt_x < -0.0001 or (pt_x + cl) > (dl + 0.0001):
-                    continue
-
-                # OT final position must remain within the internal floor width.
-                if not is_flat_rack:
-                    if pt_y < -0.0001 or (pt_y + cw) > (dw + 0.0001):
-                        continue
-
+            for pt_x, pt_y, pt_z in _candidate_points(placements, cl, cw, cargo.height, profile):
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
 
                 if any(is_overlapping(existing, candidate_box) for existing in placements):
                     continue
 
-                # FR deck-support rules apply to cargo sitting directly on the deck.
                 if is_flat_rack and pt_z <= 0.01:
                     if not flat_rack_floor_support_ok(pt_y, cw, dw):
                         continue
 
-                # If one FR cargo is overwidth, another cargo may not occupy the same X span beside it.
+                # An FR cargo whose own physical width exceeds the deck width
+                # reserves its whole longitudinal X span: no second cargo may be
+                # placed beside it in that same X interval.
                 if is_flat_rack:
                     conflict = False
                     for p in placements:
                         overlap_x = min(pt_x + cl, p.x + p.l) - max(pt_x, p.x)
-                        if overlap_x > 0.001 and (cw > dw or p.w > dw):
+                        if overlap_x > 0.001 and (cw > dw + 0.0001 or p.w > dw + 0.0001):
                             conflict = True
                             break
                     if conflict:
@@ -365,14 +386,9 @@ def pack_cargo_3d(cargos: List[Cargo], profile: dict, allow_rotation=True):
                     continue
 
                 placements.append(Placement(
-                    cargo.sku,
-                    cargo.name,
-                    pt_x,
-                    pt_y,
-                    pt_z,
-                    cl,
-                    cw,
-                    cargo.height,
+                    cargo.sku, cargo.name,
+                    pt_x, pt_y, pt_z,
+                    cl, cw, cargo.height,
                     cargo.weight,
                     cargo.is_stackable,
                     layer_num,
@@ -388,9 +404,61 @@ def pack_cargo_3d(cargos: List[Cargo], profile: dict, allow_rotation=True):
         if not placed:
             unplaced.append(cargo)
 
-    # No automatic X-centering. Each container starts packing from X=0.
     return placements, unplaced
 
+
+def _packing_score(placements: List[Placement]):
+    """Higher is better. Prefer more cargo volume/weight, then compact X usage."""
+    volume = sum(p.l * p.w * p.h for p in placements)
+    weight = sum(p.weight for p in placements)
+    max_x = max((p.x + p.l for p in placements), default=0.0)
+    return (len(placements), round(volume, 6), round(weight, 3), -round(max_x, 6))
+
+
+def pack_cargo_3d(cargos: List[Cargo], profile: dict, allow_rotation=True):
+    """Search several cargo orders instead of committing to one greedy order.
+
+    For up to 6 pieces we test every cargo order (max 720 permutations). This is
+    small enough for interactive Streamlit use and catches layouts the old
+    volume-first greedy algorithm missed. For larger lists, a deterministic set
+    of strong heuristic orders is used to keep response time reasonable.
+    """
+    if not cargos:
+        return [], []
+
+    cargos = list(cargos)
+    best_placements = []
+    best_unplaced = cargos[:]
+    best_score = (-1, -1.0, -1.0, float('-inf'))
+
+    if len(cargos) <= 6:
+        candidate_orders = permutations(cargos)
+    else:
+        candidate_orders = [
+            sorted(cargos, key=lambda c: c.length * c.width * c.height, reverse=True),
+            sorted(cargos, key=lambda c: c.length, reverse=True),
+            sorted(cargos, key=lambda c: (c.length, -c.width), reverse=True),
+            sorted(cargos, key=lambda c: c.length * c.width, reverse=True),
+            sorted(cargos, key=lambda c: c.width, reverse=True),
+            sorted(cargos, key=lambda c: c.weight, reverse=True),
+            sorted(cargos, key=lambda c: (c.length / max(c.width, 0.001)), reverse=True),
+        ]
+
+    for order in candidate_orders:
+        placements, unplaced = _pack_cargo_in_order(list(order), profile, allow_rotation)
+
+        # If every piece fits, we are done. Because all pieces are placed, the
+        # main objective (one-container feasibility) has been achieved.
+        if len(unplaced) == 0 and len(placements) == len(cargos):
+            return placements, []
+
+        score = _packing_score(placements)
+        if score > best_score:
+            best_score = score
+            best_placements = placements
+            best_unplaced = unplaced
+
+    return best_placements, best_unplaced
 
 def pack_multi_container(cargos: List[Cargo], profile: dict, allow_rotation=True):
     containers = []
@@ -404,9 +472,10 @@ def pack_multi_container(cargos: List[Cargo], profile: dict, allow_rotation=True
         )
 
         if not placements:
-            st.error(
-                "⚠️ Seçili ekipmana yüklenemeyen yük(ler): "
+            st.warning(
+                "Bu ekipman için otomatik bir yerleşim fikri oluşturulamadı: "
                 + ", ".join(f"{c.sku} - {c.name}" for c in unplaced)
+                + ". Ölçüleri, rotasyon seçeneğini veya ekipman tipini tekrar gözden geçirebilirsiniz."
             )
             break
 
@@ -511,27 +580,45 @@ def generate_excel(all_containers_manifest, container_equipment_types):
         for c_idx, df_manifest in enumerate(all_containers_manifest):
             equipment_name = container_equipment_types[c_idx]
             summary_rows.append({
-                "Container": f"Konteyner #{c_idx+1}",
+                "Unit": f"Unit #{c_idx+1}",
                 "Equipment": equipment_name,
                 "Total Items": len(df_manifest),
                 "Total Cargo Weight (kg)": df_manifest["Weight (kg)"].sum()
             })
-            df_manifest.to_excel(writer, sheet_name=f'Container_{c_idx+1}', index=False)
+            df_manifest.to_excel(writer, sheet_name=f'Unit_{c_idx+1}', index=False)
         pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Summary', index=False)
     return output.getvalue()
 
-def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num, remarks_list):
+def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num, notes_list):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     story = []
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, leading=18, textColor=rl_colors.HexColor('#0068C9'))
-    
-    story.append(Paragraph(f"Cargo Planner Pro - Loading Plan (Container #{c_num})", title_style))
+    title_style = ParagraphStyle(
+        'TitleStyle', parent=styles['Heading1'], fontSize=15, leading=18,
+        textColor=rl_colors.HexColor('#0068C9')
+    )
+    note_style = ParagraphStyle(
+        'NoteStyle', parent=styles['Normal'], fontSize=8, leading=11,
+        textColor=rl_colors.HexColor('#475569')
+    )
+
+    story.append(Paragraph(f"LoadSketch - Ön Yerleşim Fikri (Ünite #{c_num})", title_style))
     story.append(Spacer(1, 4))
-    story.append(Paragraph(f"<b>Equipment:</b> {eq_type} | <b>Length Utilization:</b> {len_util:.1f}% | <b>Total Cargo Weight:</b> {total_w:,.0f} kg", styles['Normal']))
+    story.append(Paragraph(
+        f"<b>Ekipman:</b> {eq_type} | <b>Tahmini Uzunluk Kullanımı:</b> {len_util:.1f}% | "
+        f"<b>Girilen Toplam Kargo Ağırlığı:</b> {total_w:,.0f} kg",
+        styles['Normal']
+    ))
     story.append(Spacer(1, 6))
-    
+    story.append(Paragraph(
+        "<b>Planlama notu:</b> Bu doküman, kullanıcı tarafından girilen ölçü ve ağırlıklara göre oluşturulmuş bir ön görselleştirmedir. "
+        "Resmi yükleme, lashing/securing, yapısal mühendislik hesabı veya taşıyıcı onayı niteliğinde değildir. "
+        "Gerçek uygulama öncesinde ilgili operasyonel taraflarca ayrıca doğrulanmalıdır.",
+        note_style
+    ))
+    story.append(Spacer(1, 7))
+
     img_buf = io.BytesIO()
     fig_2d.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
     img_buf.seek(0)
@@ -552,12 +639,19 @@ def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num, remarks_l
         ('FONTSIZE', (0,1), (-1,-1), 7),
     ]))
     story.append(t)
-    
+
     story.append(Spacer(1, 8))
-    story.append(Paragraph("<b>Hapag-Lloyd Operational & Lashing Remarks:</b>", styles['Heading3']))
-    for r in remarks_list:
+    story.append(Paragraph("<b>Genel Planlama Notları:</b>", styles['Heading3']))
+    for r in notes_list:
         clean_r = r.replace("**", "").replace("📌 ", "• ")
-        story.append(Paragraph(clean_r, styles['Normal']))
+        story.append(Paragraph(clean_r, note_style))
+
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        "Yalnızca ön planlama ve görselleştirme amacıyla hazırlanmıştır. Ekipman, yükleme yöntemi, bedding, "
+        "lashing/securing, ağırlık dağılımı ve nihai operasyon kararı sevkiyat öncesinde ayrıca doğrulanmalıdır.",
+        note_style
+    ))
 
     doc.build(story)
     return buffer.getvalue()
@@ -654,7 +748,7 @@ ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
 
 with ctrl1:
     eq_type = st.selectbox(
-        "🚛 Ana / İlk Konteyner Ekipman Tipi",
+        "🚛 Başlangıç Ekipman Tipi",
         list(EQUIPMENT_PROFILES.keys()),
         index=list(EQUIPMENT_PROFILES.keys()).index("40ft High Cube Flat Rack")
         if "40ft High Cube Flat Rack" in EQUIPMENT_PROFILES else 0,
@@ -674,17 +768,17 @@ with ctrl1:
 
 with ctrl2:
     allow_rot = st.checkbox("🔄 Kargoları 90° Döndürmeye İzin Ver", value=False)
-    st.caption("Kapalıyken girilen Boy değeri X ekseninde sabit kalır. Açılırsa En/Boy 90° çevrilebilir.")
+    st.caption("Kapalıyken girilen Boy değeri X ekseninde sabit kalır. Açıldığında uygulama alternatif 90° yerleşimleri de deneyebilir.")
 
     optimize_secondary = st.checkbox(
-        "♻️ 2. ve sonraki konteynerleri daha küçük ekipmana optimize et",
+        "♻️ 2. ve sonraki üniteler için alternatif ekipman fikri göster",
         value=True,
     )
-    st.caption("Örn. kalan yük 20' OT'a tamamen sığıyorsa 40HC FR yerine 20' OT önerilir.")
+    st.caption("Örneğin kalan parçalar için daha küçük bir ekipmanda da olası yerleşim bulunursa bunu alternatif olarak gösterebilir.")
 
     st.caption(
-        "OT çoklu parça planında her parçanın roof opening'den geçtiği ve içeride nihai pozisyonuna "
-        "kaydırılabildiği varsayılır; loading-path/lashing erişim simülasyonu henüz ayrı bir kontrol değildir."
+        "OT çoklu parça görselleştirmesinde her parçanın tavan açıklığından geçtiği ve içeride nihai konumuna alınabildiği varsayılır. "
+        "Gerçek yükleme yolu, erişim, bedding ve lashing/securing bu simülasyonun kapsamı dışındadır."
     )
 
 base_containers = pack_multi_container(
@@ -712,11 +806,11 @@ if base_containers:
                 default_eq = eq_type
 
             chosen_eq = st.selectbox(
-                f"🚛 Konteyner #{idx+1} ekipman tipi",
+                f"🚛 Ünite #{idx+1} için ekipman fikri",
                 options=valid_options,
                 index=valid_options.index(default_eq) if default_eq in valid_options else 0,
                 key=f"equipment_override_{idx+1}",
-                help="Listede yalnızca bu konteynerdeki tüm yükleri fiziksel olarak taşıyabilen ekipmanlar gösterilir.",
+                help="Listede, mevcut geometrik planlama kurallarıyla bu yük grubu için bir yerleşim fikri üretilebilen ekipmanlar gösterilir.",
             )
 
             fits_all, repacked = fit_group_to_equipment(base_placements, chosen_eq, allow_rot)
@@ -724,8 +818,8 @@ if base_containers:
                 chosen_placements = repacked
             else:
                 st.warning(
-                    f"Konteyner #{idx+1} için {chosen_eq} seçimi tüm yükleri taşımıyor. "
-                    f"Ana ekipman olan {eq_type} kullanıldı."
+                    f"Ünite #{idx+1} için {chosen_eq} ile otomatik yerleşim fikri oluşturulamadı. "
+                    f"Başlangıç ekipmanı olan {eq_type} görünümüne dönüldü."
                 )
                 chosen_eq = eq_type
                 chosen_placements = base_placements
@@ -743,9 +837,9 @@ if base_containers:
         container_equipment_types.append(chosen_eq)
 
 with ctrl3:
-    st.metric("Gerekli Toplam Konteyner", f"{len(containers)} Adet")
+    st.metric("Önerilen Ünite Sayısı", f"{len(containers)} Adet")
     if containers and len(set(container_equipment_types)) > 1:
-        st.success("Karışık ekipman planı aktif")
+        st.info("Alternatif ekipman kombinasyonu gösteriliyor.")
 
 # ============================================================
 # AŞAMA 3: SİMÜLASYON VE RAPORLAMA EKRANI
@@ -761,7 +855,7 @@ if containers:
         report_rows = []
         for p in placements_all:
             oog = calculate_oog(p.x, p.y, p.z, p.l, p.w, p.h, c_dl, c_dw, c_dh)
-            is_oog = "Yes" if any(v > 0 for v in oog.values()) else "No"
+            is_oog = "Estimated overhang" if any(v > 0 for v in oog.values()) else "Within reference envelope"
             report_rows.append({
                 "SKU": p.sku,
                 "Name": p.name,
@@ -774,18 +868,18 @@ if containers:
                 "Weight (kg)": p.weight,
                 "Stackable": "Yes" if p.is_stackable else "No",
                 "Layer": p.stack_layer,
-                "OOG?": is_oog,
-                "OOG Left (cm)": round(oog["left"] * 100, 1),
-                "OOG Right (cm)": round(oog["right"] * 100, 1),
-                "OOG Top (cm)": round(oog["top"] * 100, 1),
+                "Estimated Envelope Note": is_oog,
+                "Est. Left Overhang (cm)": round(oog["left"] * 100, 1),
+                "Est. Right Overhang (cm)": round(oog["right"] * 100, 1),
+                "Est. Top Overhang (cm)": round(oog["top"] * 100, 1),
             })
         all_manifests.append(pd.DataFrame(report_rows))
 
-    st.markdown("### 🚢 Konteyner Yükleme Planı")
+    st.markdown("### 🧭 Olası Yerleşim Fikri")
     selected_container_no = st.selectbox(
-        "Görüntülenecek Konteyner",
+        "Görüntülenecek Ünite",
         options=list(range(1, len(containers) + 1)),
-        format_func=lambda n: f"📦 Konteyner #{n} — {containers[n-1]['equipment']}",
+        format_func=lambda n: f"📦 Ünite #{n} — {containers[n-1]['equipment']}",
         key="selected_container_no",
     )
 
@@ -801,8 +895,8 @@ if containers:
     df_manifest = all_manifests[idx]
 
     st.caption(
-        f"Toplam {len(containers)} konteyner gerekiyor. "
-        f"Şu anda Konteyner #{selected_container_no} — {selected_eq_type} görüntüleniyor."
+        f"Girilen bilgilerle uygulama {len(containers)} ünite üzerinden bir yerleşim fikri oluşturdu. "
+        f"Şu anda Ünite #{selected_container_no} — {selected_eq_type} görüntüleniyor."
     )
 
     total_w = sum(p.weight for p in placements)
@@ -812,25 +906,25 @@ if containers:
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.markdown(
-            f'<div class="metric-card"><div class="metric-title">Uzunluk Doluluğu</div>'
+            f'<div class="metric-card"><div class="metric-title">Tahmini Uzunluk Kullanımı</div>'
             f'<div class="metric-value">%{len_util:.1f}</div></div>',
             unsafe_allow_html=True,
         )
     with m2:
         st.markdown(
-            f'<div class="metric-card"><div class="metric-title">Toplam Yük Ağırlığı</div>'
+            f'<div class="metric-card"><div class="metric-title">Girilen Toplam Ağırlık</div>'
             f'<div class="metric-value">{total_w:,.0f} KG</div></div>',
             unsafe_allow_html=True,
         )
     with m3:
         st.markdown(
-            f'<div class="metric-card"><div class="metric-title">EKİPMAN / PAYLOAD</div>'
+            f'<div class="metric-card"><div class="metric-title">GÖSTERİLEN EKİPMAN / REFERANS PAYLOAD</div>'
             f'<div class="metric-value" style="font-size:16px">{selected_eq_type}<br>{c_max_w:,.0f} KG</div></div>',
             unsafe_allow_html=True,
         )
     with m4:
         selected_category = "Flat Rack" if c_is_flat_rack else "Open Top"
-        selected_remarks = HAPAG_REMARKS[selected_category]
+        selected_remarks = GENERAL_PLANNING_NOTES[selected_category]
         try:
             fig_2d = create_2d_figure(placements, c_dl, c_dw, c_dh, max_len_used)
             pdf_data = generate_pdf(
@@ -843,9 +937,9 @@ if containers:
                 selected_remarks,
             )
             st.download_button(
-                label=f"📄 Konteyner #{selected_container_no} PDF Raporu İndir",
+                label=f"📄 Ünite #{selected_container_no} Ön Yerleşim PDF'ini İndir",
                 data=pdf_data,
-                file_name=f"container_{selected_container_no}_{selected_eq_type.replace(' ', '_')}.pdf",
+                file_name=f"loadsketch_unit_{selected_container_no}_{selected_eq_type.replace(' ', '_')}.pdf",
                 mime="application/pdf",
                 key=f"pdf_btn_selected_{selected_container_no}_{selected_eq_type}",
             )
@@ -853,16 +947,16 @@ if containers:
             st.error(f"PDF oluşturulamadı: {e}")
             fig_2d = create_2d_figure(placements, c_dl, c_dw, c_dh, max_len_used)
 
-    with st.expander(f"📋 Hapag-Lloyd {selected_category} Operasyonel & Lashing Notları", expanded=False):
+    with st.expander(f"📋 {selected_category} için Genel Planlama Notları", expanded=False):
         for r in selected_remarks:
             st.markdown(r)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     v_tab1, v_tab2, v_tab3 = st.tabs([
-        "🧊 İnteraktif 3D Yükleme Modeli",
-        "📐 2D Teknik Çizim Paftası",
-        "📋 Yükleme Manifestosu & Koordinatlar",
+        "🧊 İnteraktif 3D Yerleşim Görünümü",
+        "📐 2D Yerleşim Görünümü",
+        "📋 Parça Listesi & Tahmini Koordinatlar",
     ])
 
     with v_tab1:
@@ -879,10 +973,10 @@ if containers:
         st.dataframe(df_manifest, use_container_width=True)
 
     st.markdown("---")
-    st.markdown("#### 📦 Ekipman Özeti")
+    st.markdown("#### 📦 Yerleşim Özeti")
     summary_df = pd.DataFrame([
         {
-            "Konteyner": f"#{i+1}",
+            "Ünite": f"#{i+1}",
             "Ekipman": c["equipment"],
             "Yük Adedi": len(c["placements"]),
             "Toplam Ağırlık (kg)": sum(p.weight for p in c["placements"]),
@@ -893,8 +987,13 @@ if containers:
 
     excel_data = generate_excel(all_manifests, container_equipment_types)
     st.download_button(
-        label="📊 Tüm Konteynerlerin Detaylı Excel Raporunu İndir (.xlsx)",
+        label="📊 Tüm Ünitelerin Yerleşim Verisini Excel Olarak İndir (.xlsx)",
         data=excel_data,
-        file_name="cargo_planner_full_manifest.xlsx",
+        file_name="loadsketch_arrangement_data.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    st.caption(
+        "Bu görselleştirme yalnızca girilen ölçü ve ağırlıklara göre oluşturulmuş bir ön yerleşim fikridir. "
+        "Gerçek yükleme, ekipman uygunluğu, ağırlık dağılımı, bedding, lashing/securing ve nihai operasyon kararı ayrıca doğrulanmalıdır."
     )
