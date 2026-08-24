@@ -29,7 +29,7 @@ st.markdown("""
         border-top: 4px solid #0068C9;
         text-align: center;
     }
-    .metric-title { font-size: 12px; color: #6c757d; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-title { font-size: 11px; color: #6c757d; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
     .metric-value { font-size: 22px; color: #1e293b; font-weight: 800; margin-top: 4px; }
     .stDownloadButton > button {
         width: 100%;
@@ -44,7 +44,7 @@ st.title("🚢 Cargo Planner Pro - Yükleme Simülasyonu")
 st.caption("Endüstriyel Özel Ekipman (Flat Rack & Open Top) Yük Planlama ve 3D Görselleştirme")
 
 # ============================================================
-# DATA MODELS
+# DATA MODELS & HAPAG REMARKS
 # ============================================================
 @dataclass
 class Cargo:
@@ -67,6 +67,21 @@ class Placement:
     is_stackable: bool
     stack_layer: int
     max_stack: int
+
+# Hapag-Lloyd Standart Notları
+HAPAG_REMARKS = {
+    "Flat Rack": [
+        "📌 **Lashing Points:** Tüm kargolar Hapag-Lloyd lashing gözlerine min. 5T kapasiteli şerit/zincir ile sabitlenmelidir.",
+        "📌 **OOG Clearance:** Taban genişliğini (2.43m) aşan yüklerde vinç/sapan elleçleme boşlukları dikkate alınmalıdır.",
+        "📌 **Weight Distribution:** Ağır kargoların ağırlık merkezi konteyner tabanının ortasına %60 oranında yayılmalıdır.",
+        "📌 **Bedding Requirements:** Noktasal yüksek ağırlıkta ahşap kalas (bedding) kullanımı zorunludur."
+    ],
+    "Open Top": [
+        "📌 **Tarpaulin/Tente:** Yük yüksekliği profil sınırını (2.34m/2.65m) aşıyorsa tente örtülemez, OOG Top olarak bildirilmeli.",
+        "📌 **Roof Bows:** Tente çıtaları çıkarıldığında üst yapı rijitliği azalacağı için yan duvar lashing limitleri gözetilmelidir.",
+        "📌 **Door Header:** Arka kapı üst kirişi (swivel header) sökülebilir, yükleme sonrası yerine takılmalıdır."
+    ]
+}
 
 # ============================================================
 # INITIALIZE STATE
@@ -149,7 +164,6 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                # KONTEYNER BOYUT SINIRI KONTROLÜ (Uzunluk ve Genişlik Taşamaz)
                 if (pt_x + cl > dl + 0.01 and dl > 0) or (pt_y + cw > dw + 0.01 and dw > 0):
                     continue
                 
@@ -278,7 +292,7 @@ def generate_excel(all_containers_manifest, eq_type):
         pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Summary', index=False)
     return output.getvalue()
 
-def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num):
+def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num, remarks_list):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     story = []
@@ -286,15 +300,15 @@ def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num):
     title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, leading=18, textColor=rl_colors.HexColor('#0068C9'))
     
     story.append(Paragraph(f"Cargo Planner Pro - Loading Plan (Container #{c_num})", title_style))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(f"<b>Equipment:</b> {eq_type} | <b>Length Utilization:</b> {len_util:.1f}% | <b>Total Cargo Weight:</b> {total_w:,.0f} kg", styles['Normal']))
     story.append(Spacer(1, 6))
-    story.append(Paragraph(f"<b>Equipment:</b> {eq_type} | <b>Length Utilization:</b> {len_util:.1f}% | <b>Total Weight:</b> {total_w:,.0f} kg", styles['Normal']))
-    story.append(Spacer(1, 8))
     
     img_buf = io.BytesIO()
     fig_2d.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
     img_buf.seek(0)
-    story.append(Image(img_buf, width=540, height=320))
-    story.append(Spacer(1, 8))
+    story.append(Image(img_buf, width=540, height=280))
+    story.append(Spacer(1, 6))
 
     table_data = [df_report.columns.tolist()] + df_report.values.tolist()
     t = Table(table_data)
@@ -304,17 +318,25 @@ def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num):
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
         ('FONTSIZE', (0,0), (-1,0), 8),
-        ('BOTTOMPADDING', (0,0), (-1,0), 4),
+        ('BOTTOMPADDING', (0,0), (-1,0), 3),
         ('BACKGROUND', (0,1), (-1,-1), rl_colors.HexColor('#F8F9FA')),
         ('GRID', (0,0), (-1,-1), 0.5, rl_colors.grey),
         ('FONTSIZE', (0,1), (-1,-1), 7),
     ]))
     story.append(t)
+    
+    # Hapag-Lloyd Remarks PDF Ekleniyor
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("<b>Hapag-Lloyd Operational & Lashing Remarks:</b>", styles['Heading3']))
+    for r in remarks_list:
+        clean_r = r.replace("**", "").replace("📌 ", "• ")
+        story.append(Paragraph(clean_r, styles['Normal']))
+
     doc.build(story)
     return buffer.getvalue()
 
 # ============================================================
-# AŞAMA 1: TAM GENİŞLİK KARGO LİSTESİ VE DÜZENLEME
+# AŞAMA 1: KARGO LİSTESİ
 # ============================================================
 with st.expander("📦 Kargo Listesini Düzenle / Yeni Ekle / Excel Yükle", expanded=True):
     col_tab, col_add = st.columns([2.5, 1])
@@ -398,7 +420,7 @@ with st.expander("📦 Kargo Listesini Düzenle / Yeni Ekle / Excel Yükle", exp
                 st.error(f"Format Hatası: {e}")
 
 # ============================================================
-# AŞAMA 2: YATAY AYARLAR & KONTROL ÇUBUĞU (GÜNCELLENMİŞ ÖZEL EKİPMANLAR)
+# AŞAMA 2: YATAY AYARLAR & HAPAG PAYLOAD VE NOTLAR
 # ============================================================
 st.markdown("---")
 ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
@@ -416,19 +438,19 @@ with ctrl1:
         ]
     )
     
-    # Mutabık kalınan güncel ölçüler (m) ve ağırlık limitleri (kg)
+    # Hapag-Lloyd Gerçek Net Yük Kapasiteleri (Max Allowed Payload KG)
     if eq_type == "20ft Flat Rack":
-        dl, dw, dh, max_w = 5.50, 2.43, 2.20, 42000.0
+        dl, dw, dh, max_w = 5.50, 2.43, 2.20, 31000.0
     elif eq_type == "40ft Standard Flat Rack":
-        dl, dw, dh, max_w = 11.60, 2.43, 1.92, 40000.0
+        dl, dw, dh, max_w = 11.60, 2.43, 1.92, 39000.0
     elif eq_type == "40ft High Cube Flat Rack":
-        dl, dw, dh, max_w = 11.60, 2.43, 2.25, 40000.0
+        dl, dw, dh, max_w = 11.60, 2.43, 2.25, 39000.0
     elif eq_type == "20ft Standard Open Top":
-        dl, dw, dh, max_w = 5.33, 2.23, 2.34, 30000.0
+        dl, dw, dh, max_w = 5.33, 2.23, 2.34, 28100.0
     elif eq_type == "40ft Standard Open Top":
-        dl, dw, dh, max_w = 11.55, 2.23, 2.34, 28000.0
+        dl, dw, dh, max_w = 11.55, 2.23, 2.34, 26500.0
     elif eq_type == "40ft High Cube Open Top":
-        dl, dw, dh, max_w = 11.55, 2.19, 2.65, 28000.0
+        dl, dw, dh, max_w = 11.55, 2.19, 2.65, 26200.0
 
 with ctrl2:
     allow_rot = st.checkbox("🔄 Kargoları 90° Döndürmeye İzin Ver", value=True)
@@ -439,8 +461,16 @@ containers = pack_multi_container(st.session_state.c_list, dl, dw, dh, max_w, al
 with ctrl3:
     st.metric("Gerekli Toplam Konteyner", f"{len(containers)} Adet")
 
+# Hapag-Lloyd Notlarını Arayüzde Gösterme
+eq_category = "Flat Rack" if "Flat Rack" in eq_type else "Open Top"
+current_remarks = HAPAG_REMARKS[eq_category]
+
+with st.expander(f"📋 Hapag-Lloyd {eq_category} Operasyonel & Lashing Notları", expanded=True):
+    for r in current_remarks:
+        st.markdown(r)
+
 # ============================================================
-# AŞAMA 3: SİMÜLASYON, 3D/2D VE RAPORLAMA EKRANI
+# AŞAMA 3: SİMÜLASYON VE RAPORLAMA EKRANI
 # ============================================================
 if containers:
     tab_titles = [f"📦 Konteyner #{idx+1}" for idx, c in enumerate(containers)]
@@ -453,11 +483,11 @@ if containers:
             max_len_used = max([p.x + p.l for p in placements]) if placements else 0.0
             len_util = (max_len_used / dl) * 100 if dl > 0 else 0
             
-            # Üst Özet Kartları
+            # Üst Özet Kartları (Maks Taşıma -> MAX ALLOWED PAYLOAD Değişikliği)
             m1, m2, m3, m4 = st.columns(4)
             with m1: st.markdown(f'<div class="metric-card"><div class="metric-title">Uzunluk Doluluğu</div><div class="metric-value">%{len_util:.1f}</div></div>', unsafe_allow_html=True)
             with m2: st.markdown(f'<div class="metric-card"><div class="metric-title">Toplam Yük Ağırlığı</div><div class="metric-value">{total_w:,.0f} KG</div></div>', unsafe_allow_html=True)
-            with m3: st.markdown(f'<div class="metric-card"><div class="metric-title">Maks. Taşıma Kapasitesi</div><div class="metric-value">{max_w:,.0f} KG</div></div>', unsafe_allow_html=True)
+            with m3: st.markdown(f'<div class="metric-card"><div class="metric-title">MAX ALLOWED PAYLOAD</div><div class="metric-value">{max_w:,.0f} KG</div></div>', unsafe_allow_html=True)
             with m4:
                 report_data = []
                 for p in placements:
@@ -471,10 +501,10 @@ if containers:
                 df_manifest = pd.DataFrame(report_data)
                 all_manifests.append(df_manifest)
 
-                # PDF ÜRETİMİ VE İNDİRME BUTONU (GÜNCELLENDİ)
+                # PDF ÜRETİMİ
                 try:
                     fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
-                    pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w, idx+1)
+                    pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w, idx+1, current_remarks)
                     st.download_button(
                         label=f"📄 Konteyner #{idx+1} PDF Raporu İndir",
                         data=pdf_data,
@@ -487,7 +517,7 @@ if containers:
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # 3D vs 2D Görselleştirme Tabları
+            # Visual Tabs
             v_tab1, v_tab2, v_tab3 = st.tabs(["🧊 İnteraktif 3D Yükleme Modeli", "📐 2D Teknik Çizim Paftası", "📋 Yükleme Manifestosu & Koordinatlar"])
             
             with v_tab1:
@@ -499,7 +529,7 @@ if containers:
             with v_tab3:
                 st.dataframe(df_manifest)
 
-    # Genel Excel Toplu İndirme
+    # Excel Toplu İndirme
     st.markdown("---")
     excel_data = generate_excel(all_manifests, eq_type)
     st.download_button(
