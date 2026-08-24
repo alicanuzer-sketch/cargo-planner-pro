@@ -107,12 +107,10 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
     for idx, p in enumerate(placements):
         c_color = colors[idx % len(colors)]
         
-        # 8 Köşe Noktası
         x_pts = [p.x, p.x+p.l, p.x+p.l, p.x, p.x, p.x+p.l, p.x+p.l, p.x]
         y_pts = [p.y, p.y, p.y+p.w, p.y+p.w, p.y, p.y, p.y+p.w, p.y+p.w]
         z_pts = [p.z, p.z, p.z, p.z, p.z+p.h, p.z+p.h, p.z+p.h, p.z+p.h]
 
-        # 3D Yüzey Yapılandırması (12 Üçgen Yüzey)
         fig.add_trace(go.Mesh3d(
             x=x_pts, y=y_pts, z=z_pts,
             i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2],
@@ -206,11 +204,10 @@ with col_main:
     with c4: st.markdown(f'<div class="metric-card"><div class="metric-title">MAX PAYLOAD</div><div class="metric-value">{max_w:,.0f} KG</div></div>', unsafe_allow_html=True)
 
     if len(placements) > 0:
-        # Sekmeli Görünüm (3D İnteraktif Modül + 2D Teknik Pafta)
         tab_3d, tab_2d = st.tabs(["🧊 İnteraktif 3D Görünüm (Plotly)", "📐 2D Teknik Paftalar (Matplotlib)"])
         
         with tab_3d:
-            st.plotly_chart(render_3d_plotly(placements, dl, dw, dh), use_container_width=True)
+            st.plotly_chart(render_3d_plotly(placements, dl, dw, dh), width='stretch')
 
         with tab_2d:
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12))
@@ -264,6 +261,6 @@ with col_main:
             })
 
         st.subheader("📋 Load Manifest & OOG Specification")
-        st.dataframe(pd.DataFrame(report_data), use_container_width=True)
+        st.dataframe(pd.DataFrame(report_data), width='stretch')
     else:
         st.info("Load list is empty. Please add items from the sidebar.")
