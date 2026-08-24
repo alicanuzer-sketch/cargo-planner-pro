@@ -103,16 +103,6 @@ def is_overlapping(p1: Placement, candidate_box):
         p1.z + p1.h <= z2 + 0.0001 or z2 + h2 <= p1.z + 0.0001
     )
 
-def is_valid_placement(pt_x, pt_y, pt_z, cl, cw, ch, dl, dw=2.43, max_oog_width=5.0):
-    # KESİN SINIR KONTROLÜ: x + cl toplamı konteyner boyundan (dl) büyükse YASAK!
-    if (pt_x + cl) > dl + 0.0001:
-        return False
-
-    if (pt_y + cw) > max_oog_width + 0.0001:
-        return False
-
-    return True
-
 def check_stacking_validity(candidate_box, placements: List[Placement]):
     pt_x, pt_y, pt_z, cl, cw, ch = candidate_box
     if pt_z <= 0.01:
@@ -145,8 +135,7 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
     MAX_OOG_HEIGHT = 5.00
     allowed_max_w = MAX_OOG_WIDTH if is_flat_rack else dw
 
-    # Kargoları Hacme (Boy x En x Yükseklik) göre büyükten küçüğe sıralıyoruz.
-    # Böylece 10.23m boyundaki devasa kargo her zaman ILK olarak (x=0) noktasına yerleşir.
+    # Büyükten küçüğe hacme ve ağırlığa göre sırala
     sorted_cargos = sorted(cargos, key=lambda c: (c.length * c.width * c.height, c.weight), reverse=True)
 
     for cargo in sorted_cargos:
@@ -175,16 +164,16 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
                 (p.x, p.y, p.z + p.h),
             ])
 
-        # Koordinatları X (boy) öncelikli sırala
         candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[0], pt[1], pt[2]))
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                # KESİN FİZİKSEL SINIR: x + kargo_boyu asla dl (11.60m) değerini geçemez!
-                if (pt_x + cl) > dl + 0.0001:
+                # KATI UZUNLUK SINIRI: Konteyner boyunu (dl = 11.60m) AŞAMAZ!
+                if round(pt_x + cl, 4) > round(dl, 4):
                     continue
 
-                if not is_valid_placement(pt_x, pt_y, pt_z, cl, cw, cargo.height, dl=dl, dw=dw, max_oog_width=allowed_max_w):
+                # KATI GENİŞLİK SINIRI
+                if round(pt_y + cw, 4) > round(allowed_max_w, 4):
                     continue
 
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
