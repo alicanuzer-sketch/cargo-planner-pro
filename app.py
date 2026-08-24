@@ -104,26 +104,9 @@ def is_overlapping(p1: Placement, candidate_box):
     )
 
 def is_valid_placement(pt_x, pt_y, pt_z, cl, cw, ch, dl, dw=2.43, max_oog_width=5.0):
-    # KESİN SINIR KONTROLÜ: x + cl toplamı konteyner boyundan (dl) büyükse KESİNLİKLE YASAK!
+    # KESİN SINIR KONTROLÜ: x + cl toplamı konteyner boyundan (dl) büyükse YASAK!
     if (pt_x + cl) > dl + 0.0001:
         return False
-
-    MIN_GROUND_CONTACT_RATIO = 0.60
-    MAX_Y_CENTER_LIMIT = 2.00
-
-    if pt_z <= 0.01:
-        if pt_y >= dw:
-            return False
-
-        ground_contact_width = max(0.0, min(pt_y + cw, dw) - pt_y)
-        contact_ratio = ground_contact_width / cw
-        
-        if contact_ratio < MIN_GROUND_CONTACT_RATIO:
-            return False
-
-        y_center = pt_y + (cw / 2.0)
-        if y_center > MAX_Y_CENTER_LIMIT:
-            return False
 
     if (pt_y + cw) > max_oog_width + 0.0001:
         return False
@@ -160,24 +143,18 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
     MAX_OOG_WIDTH = 5.00
     MAX_OOG_HEIGHT = 5.00
-
     allowed_max_w = MAX_OOG_WIDTH if is_flat_rack else dw
 
-    # EN BÜYÜK BOYUTTAKİ KARGOLARI EN BAŞA ALIYORUZ (Böylece 10.23m kargo x=0.0 noktasından başlar)
-    sorted_cargos = sorted(cargos, key=lambda c: (max(c.length, c.width), c.weight), reverse=True)
+    # Kargoları Hacme (Boy x En x Yükseklik) göre büyükten küçüğe sıralıyoruz.
+    # Böylece 10.23m boyundaki devasa kargo her zaman ILK olarak (x=0) noktasına yerleşir.
+    sorted_cargos = sorted(cargos, key=lambda c: (c.length * c.width * c.height, c.weight), reverse=True)
 
     for cargo in sorted_cargos:
-        if current_weight + cargo.weight > max_w:
-            unplaced.append(cargo)
-            continue
-
-        if cargo.height > MAX_OOG_HEIGHT:
+        if current_weight + cargo.weight > max_w or cargo.height > MAX_OOG_HEIGHT:
             unplaced.append(cargo)
             continue
 
         placed = False
-        
-        # Olası en-boy seçenekleri
         orientations = []
         if cargo.length <= dl + 0.0001 and cargo.width <= allowed_max_w + 0.0001:
             orientations.append((cargo.length, cargo.width))
@@ -198,12 +175,12 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
                 (p.x, p.y, p.z + p.h),
             ])
 
-        # Koordinatları Z, X, Y sırasına göre sırala
-        candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[2], pt[0], pt[1]))
+        # Koordinatları X (boy) öncelikli sırala
+        candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[0], pt[1], pt[2]))
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                # KESİN FİZİKSEL SINIR: x + kargo_boyu asla dl (11.60m) değerinden büyük olamaz!
+                # KESİN FİZİKSEL SINIR: x + kargo_boyu asla dl (11.60m) değerini geçemez!
                 if (pt_x + cl) > dl + 0.0001:
                     continue
 
@@ -240,7 +217,7 @@ def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, m
     while len(remaining_cargos) > 0:
         placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, is_flat_rack, allow_rotation)
         if not placements:
-            st.error(f"⚠️ Sığmayan veya Limitleri Aşan Kargolar: {[c.name for c in unplaced]}")
+            st.error(f"⚠️ Konteynere Sığmayan Yükler: {[c.name for c in unplaced]}")
             break
         containers.append(placements)
         remaining_cargos = unplaced
@@ -289,7 +266,7 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
     fig = go.Figure()
     colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
 
-    # Konteyner Tabanı Çerçevesi (Tam dl, dw, dh ölçülerinde)
+    # Konteyner Taban Çerçevesi
     fig.add_trace(go.Scatter3d(
         x=[0, dl, dl, 0, 0, 0, dl, dl, 0, 0, 0, 0, dl, dl, dl, dl],
         y=[0, 0, dw, dw, 0, 0, 0, dw, dw, 0, dw, dw, dw, 0, 0, dw],
@@ -297,7 +274,6 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
         mode='lines', line=dict(color='#334155', width=4), name='Container Frame'
     ))
 
-    # KÜP KÖŞE VE ÜÇGEN YÜZEY İNDEKS HARİTASI
     for idx, p in enumerate(placements):
         c_color = colors[idx % len(colors)]
 
@@ -320,7 +296,7 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
 
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title='Uzunluk / X (m)', range=[0, dl]),
+            xaxis=dict(title='Uzunluk / X (m)', range=[0, max(dl, 12)]),
             yaxis=dict(title='Genişlik / Y (m)', range=[0, 5]),
             zaxis=dict(title='Yükseklik / Z (m)', range=[0, 5]),
             aspectmode='data'
