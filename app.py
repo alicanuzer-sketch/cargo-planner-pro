@@ -218,14 +218,10 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
         if not placed:
             unplaced.append(cargo)
 
-    # Eğer tek bir kargo kaldıysa ve çok ağırsa onu tabanın ortasına kaydır
-    if len(placements) == 1 and placements[0].l < dl:
-        p0 = placements[0]
-        centered_x = (dl - p0.l) / 2.0
-        placements[0] = Placement(
-            p0.sku, p0.name, centered_x, p0.y, p0.z, p0.l, p0.w, p0.h, p0.weight,
-            p0.is_stackable, p0.stack_layer, p0.max_stack
-        )
+    # ÖNEMLİ: X ekseninde otomatik merkezleme YOK.
+    # Her konteynerde ilk yerleşen kargo X=0.0'dan başlar.
+    # Bir yük diğer yüklerle aynı konteynere sığmıyorsa unplaced listesine gider
+    # ve pack_multi_container() tarafından sonraki konteynere aktarılır.
 
     return placements, unplaced
 
@@ -504,8 +500,8 @@ with ctrl1:
         dl, dw, dh, max_w = 11.55, 2.19, 2.65, 26200.0
 
 with ctrl2:
-    allow_rot = st.checkbox("🔄 Kargoları 90° Döndürmeye İzin Ver", value=True)
-    st.caption("En/Boy optimizasyonu için kargolar otomatik çevrilir.")
+    allow_rot = st.checkbox("🔄 Kargoları 90° Döndürmeye İzin Ver", value=False)
+    st.caption("Kapalıyken girilen Boy değeri X ekseninde sabit kalır. Açılırsa En/Boy 90° çevrilebilir ve konteyner adedi değişebilir.")
 
 containers = pack_multi_container(st.session_state.c_list, dl, dw, dh, max_w, is_flat_rack=is_flat_rack, allow_rotation=allow_rot)
 
