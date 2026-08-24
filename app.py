@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import plotly.graph_objects as go
 from dataclasses import dataclass
 from typing import List
 
@@ -22,7 +23,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚢 Project Logistics Loading Planner")
-st.caption("Cargo-Planner style professional OOG Multi-View Layout")
+st.caption("Cargo-Planner style professional OOG Multi-View & 3D Interactive Layout")
 
 # ============================================================
 # DATA MODELS
@@ -45,7 +46,7 @@ class Placement:
     weight: float
 
 # ============================================================
-# INITIALIZE STATE (Hafıza Yönetimi Sabitlendi)
+# INITIALIZE STATE
 # ============================================================
 if 'c_list' not in st.session_state:
     st.session_state.c_list = [
@@ -56,7 +57,7 @@ if 'c_list' not in st.session_state:
     ]
 
 # ============================================================
-# PACKING ENGINE (Yan Yana Sıralama Altyapısı Düzenlendi)
+# PACKING ENGINE
 # ============================================================
 def calculate_oog(x, y, z, cl, cw, ch, dl, dw, dh):
     return {
@@ -68,13 +69,10 @@ def pack_cargo(cargos: List[Cargo], dl: float, dw: float, dh: float):
     placements: List[Placement] = []
     unplaced = []
     
-    # Hacimsel büyüklüğe göre sırala
     sorted_cargos = sorted(cargos, key=lambda c: (c.length * c.width * c.height), reverse=True)
-    
-    current_x = 0.0  # Kargoların üst üste binmesini önleyen takip çizgisi
+    current_x = 0.0
 
     for cargo in sorted_cargos:
-        # Genişlik taşması varsa kargoyu Y ekseninde ortala (Symmetrical OOG)
         cy = (dw - cargo.width) / 2
         cx = current_x
         cz = 0.0
@@ -83,10 +81,66 @@ def pack_cargo(cargos: List[Cargo], dl: float, dw: float, dh: float):
             cargo.sku, cargo.name, cx, cy, cz, cargo.length, cargo.width, cargo.height, cargo.weight
         ))
         
-        # Bir sonraki kargoyu bu kargonun bittiği yere koy (X ekseninde kaydır)
         current_x += cargo.length
 
     return placements, unplaced
+
+# ============================================================
+# PLOTLY 3D RENDER ENGINE
+# ============================================================
+def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: float):
+    fig = go.Figure()
+    colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF']
+
+    # 1. Ekipman Taban/Çerçeve Çizgileri
+    fig.add_trace(go.Scatter3d(
+        x=[0, dl, dl, 0, 0, 0, dl, dl, 0, 0, 0, 0, dl, dl, dl, dl],
+        y=[0, 0, dw, dw, 0, 0, 0, dw, dw, 0, dw, dw, dw, 0, 0, dw],
+        z=[0, 0, 0, 0, 0, dh, dh, dh, dh, dh, 0, dh, dh, dh, 0, 0],
+        mode='lines',
+        line=dict(color='gray', width=4),
+        name='Container Wireframe',
+        hoverinfo='none'
+    ))
+
+    # 2. Kargoları 3D Mesh (Prizma) Olarak Çizme
+    for idx, p in enumerate(placements):
+        c_color = colors[idx % len(colors)]
+        
+        # 8 Köşe Noktası
+        x_pts = [p.x, p.x+p.l, p.x+p.l, p.x, p.x, p.x+p.l, p.x+p.l, p.x]
+        y_pts = [p.y, p.y, p.y+p.w, p.y+p.w, p.y, p.y, p.y+p.w, p.y+p.w]
+        z_pts = [p.z, p.z, p.z, p.z, p.z+p.h, p.z+p.h, p.z+p.h, p.z+p.h]
+
+        # 3D Yüzey Yapılandırması (12 Üçgen Yüzey)
+        fig.add_trace(go.Mesh3d(
+            x=x_pts, y=y_pts, z=z_pts,
+            i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2],
+            j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
+            k=[0, 7, 5, 3, 6, 7, 1, 1, 1, 5, 7, 7],
+            color=c_color,
+            opacity=0.75,
+            name=f"SKU {p.sku}: {p.name}",
+            hoverinfo="text",
+            hovertext=(
+                f"<b>{p.name}</b><br>"
+                f"SKU: {p.sku}<br>"
+                f"Boyut (BxGxY): {p.l:.2f} x {p.w:.2f} x {p.h:.2f} m<br>"
+                f"Ağırlık: {p.weight:,.0f} kg"
+            )
+        ))
+
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title='Uzunluk / X (m)', backgroundcolor="rgb(240, 240, 240)"),
+            yaxis=dict(title='Genişlik / Y (m)', backgroundcolor="rgb(240, 240, 240)"),
+            zaxis=dict(title='Yükseklik / Z (m)', backgroundcolor="rgb(240, 240, 240)"),
+            aspectmode='data'
+        ),
+        margin=dict(l=0, r=0, b=0, t=30),
+        height=550
+    )
+    return fig
 
 # ============================================================
 # STREAMLIT UI LAYOUT
@@ -104,7 +158,20 @@ with col_sidebar:
     else:
         dl, dw, dh, max_w = 12.02, 2.35, 2.38, 28000.0
 
-    st.subheader("➕ Add Item")
+    st.subheader("📁 Toplu Yükleme (Excel/CSV)")
+    uploaded_file = st.file_uploader("Kargo Listesi Yükle", type=["xlsx", "csv"])
+    if uploaded_file is not None:
+        try:
+            df_up = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+            st.session_state.c_list = [
+                Cargo(str(row['SKU']), str(row['Name']), float(row['Length_m']), float(row['Width_m']), float(row['Height_m']), float(row['Weight_kg']))
+                for _, row in df_up.iterrows()
+            ]
+            st.success(f"✅ {len(df_up)} kargo eklendi!")
+        except Exception as e:
+            st.error(f"Hata: {e}")
+
+    st.subheader("➕ Manuel Ekle")
     with st.form("cargo_form", clear_on_submit=True):
         sku = st.text_input("SKU / ID", f"{len(st.session_state.c_list) + 10}")
         name = st.text_input("Cargo Name", f"Item-{sku}")
@@ -122,7 +189,7 @@ with col_sidebar:
         st.rerun()
 
 # ============================================================
-# RESULTS & MULTI-VIEW DRAWINGS
+# RESULTS & DRAWINGS
 # ============================================================
 with col_main:
     placements, unplaced = pack_cargo(st.session_state.c_list, dl, dw, dh)
@@ -139,60 +206,63 @@ with col_main:
     with c4: st.markdown(f'<div class="metric-card"><div class="metric-title">MAX PAYLOAD</div><div class="metric-value">{max_w:,.0f} KG</div></div>', unsafe_allow_html=True)
 
     if len(placements) > 0:
-        # 3'lü Görünüm Paftası Çizimi (Matplotlib)
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 14))
-        colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF']
+        # Sekmeli Görünüm (3D İnteraktif Modül + 2D Teknik Pafta)
+        tab_3d, tab_2d = st.tabs(["🧊 İnteraktif 3D Görünüm (Plotly)", "📐 2D Teknik Paftalar (Matplotlib)"])
+        
+        with tab_3d:
+            st.plotly_chart(render_3d_plotly(placements, dl, dw, dh), use_container_width=True)
+
+        with tab_2d:
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12))
+            colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF']
+
+            ax1.set_title("TOP VIEW (Üstten Görünüm - Genişlik Taşması / Overwidth)", fontsize=11, fontweight='bold')
+            ax1.add_patch(patches.Rectangle((0, 0), dl, dw, color='lightgray', alpha=0.4))
+            
+            ax2.set_title("SIDE VIEW (Yandan Görünüm - Yükseklik Taşması / Overheight)", fontsize=11, fontweight='bold')
+            ax2.add_patch(patches.Rectangle((0, 0), dl, dh, color='lightgray', alpha=0.4))
+            
+            ax3.set_title("FRONT VIEW (Önden Görünüm - Genişlik & Yükseklik Taşma Detayı)", fontsize=11, fontweight='bold')
+            ax3.add_patch(patches.Rectangle((0, 0), dw, dh, color='lightgray', alpha=0.4))
+
+            for idx, p in enumerate(placements):
+                c_color = colors[idx % len(colors)]
+
+                # Top View
+                ax1.add_patch(patches.Rectangle((p.x, p.y), p.l, p.w, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.5))
+                ax1.text(p.x + p.l/2, p.y + p.w/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=9)
+
+                # Side View
+                ax2.add_patch(patches.Rectangle((p.x, p.z), p.l, p.h, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.5))
+                ax2.text(p.x + p.l/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=9)
+
+                # Front View
+                ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, edgecolor='black', facecolor='none', linestyle='--', linewidth=1.5))
+                ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, facecolor=c_color, alpha=0.4))
+                ax3.text(p.y + p.w/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='black', fontweight='bold', fontsize=9)
+
+            max_x_bound = max(dl + 2, max_len_used + 2)
+            max_y_bound = max([dw + 2] + [p.y + p.w + 1 for p in placements])
+            min_y_bound = min([-1.0] + [p.y - 1 for p in placements])
+            max_z_bound = max([dh + 2] + [p.z + p.h + 1 for p in placements])
+
+            ax1.set_xlim(-1, max_x_bound); ax1.set_ylim(min_y_bound, max_y_bound); ax1.grid(True, linestyle='--', alpha=0.4)
+            ax2.set_xlim(-1, max_x_bound); ax2.set_ylim(-0.5, max_z_bound); ax2.grid(True, linestyle='--', alpha=0.4)
+            ax3.set_xlim(min_y_bound, max_y_bound); ax3.set_ylim(-0.5, max_z_bound); ax3.grid(True, linestyle='--', alpha=0.4)
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+
+        # Manifest Tablosu
         report_data = []
-
-        # 1. Plan: Üstten Görünüm (Top View)
-        ax1.set_title("TOP VIEW (Üstten Görünüm - Genişlik Taşması / Overwidth)", fontsize=12, fontweight='bold')
-        ax1.add_patch(patches.Rectangle((0, 0), dl, dw, color='lightgray', alpha=0.4, label='Container Base'))
-        
-        # 2. Plan: Yandan Görünüm (Side View)
-        ax2.set_title("SIDE VIEW (Yandan Görünüm - Yükseklik Taşması / Overheight)", fontsize=12, fontweight='bold')
-        ax2.add_patch(patches.Rectangle((0, 0), dl, dh, color='lightgray', alpha=0.4))
-        
-        # 3. Plan: Önden Görünüm (Front View)
-        ax3.set_title("FRONT VIEW (Önden Görünüm - Genişlik & Yükseklik Taşma Detayı)", fontsize=12, fontweight='bold')
-        ax3.add_patch(patches.Rectangle((0, 0), dw, dh, color='lightgray', alpha=0.4))
-
-        for idx, p in enumerate(placements):
+        for p in placements:
             oog = calculate_oog(p.x, p.y, p.z, p.l, p.w, p.h, dl, dw, dh)
             is_oog = "Yes" if any(v > 0 for v in oog.values()) else "No"
-            c_color = colors[idx % len(colors)]
-
             report_data.append({
                 "SKU": p.sku, "Name": p.name, "Length (cm)": int(p.l*100), "Width (cm)": int(p.w*100), "Height (cm)": int(p.h*100),
                 "Weight (kg)": p.weight, "OOG?": is_oog, "Left OOG (cm)": int(oog['left']*100), "Right OOG (cm)": int(oog['right']*100), "Top OOG (cm)": int(oog['top']*100)
             })
 
-            # Top View Çiz
-            ax1.add_patch(patches.Rectangle((p.x, p.y), p.l, p.w, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.5))
-            ax1.text(p.x + p.l/2, p.y + p.w/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=9)
-
-            # Side View Çiz
-            ax2.add_patch(patches.Rectangle((p.x, p.z), p.l, p.h, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.5))
-            ax2.text(p.x + p.l/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=9)
-
-            # Front View Çiz (Üst üste binmeyi engellemek için tüm kargoların ön kesit izdüşümünü basar)
-            ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, edgecolor='black', facecolor='none', linestyle='--', linewidth=1.5))
-            ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, facecolor=c_color, alpha=0.4))
-            ax3.text(p.y + p.w/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='black', fontweight='bold', fontsize=9)
-
-        # Grafik Sınır Ayarları (Dinamik Ölçeklendirme)
-        max_x_bound = max(dl + 2, max_len_used + 2)
-        max_y_bound = max([dw + 2] + [p.y + p.w + 1 for p in placements])
-        min_y_bound = min([-1.0] + [p.y - 1 for p in placements])
-        max_z_bound = max([dh + 2] + [p.z + p.h + 1 for p in placements])
-
-        ax1.set_xlim(-1, max_x_bound); ax1.set_ylim(min_y_bound, max_y_bound); ax1.grid(True, linestyle='--', alpha=0.4)
-        ax2.set_xlim(-1, max_x_bound); ax2.set_ylim(-0.5, max_z_bound); ax2.grid(True, linestyle='--', alpha=0.4)
-        ax3.set_xlim(min_y_bound, max_y_bound); ax3.set_ylim(-0.5, max_z_bound); ax3.grid(True, linestyle='--', alpha=0.4)
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-
-        # Manifest Tablosu
         st.subheader("📋 Load Manifest & OOG Specification")
         st.dataframe(pd.DataFrame(report_data), use_container_width=True)
     else:
