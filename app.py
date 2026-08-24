@@ -80,6 +80,67 @@ HAPAG_REMARKS = {
     ]
 }
 
+
+EQUIPMENT_PROFILES = {
+    "20ft Flat Rack": {"dl": 5.50, "dw": 2.43, "dh": 2.20, "max_w": 31000.0, "is_flat_rack": True},
+    "40ft Standard Flat Rack": {"dl": 11.60, "dw": 2.43, "dh": 1.92, "max_w": 39000.0, "is_flat_rack": True},
+    "40ft High Cube Flat Rack": {"dl": 11.60, "dw": 2.43, "dh": 2.25, "max_w": 39000.0, "is_flat_rack": True},
+    "20ft Standard Open Top": {"dl": 5.33, "dw": 2.23, "dh": 2.34, "max_w": 28100.0, "is_flat_rack": False},
+    "40ft Standard Open Top": {"dl": 11.55, "dw": 2.23, "dh": 2.34, "max_w": 26500.0, "is_flat_rack": False},
+    "40ft High Cube Open Top": {"dl": 11.55, "dw": 2.19, "dh": 2.65, "max_w": 26200.0, "is_flat_rack": False},
+}
+
+SECONDARY_EQUIPMENT_PRIORITY = [
+    "20ft Standard Open Top",
+    "20ft Flat Rack",
+    "40ft Standard Open Top",
+    "40ft High Cube Open Top",
+    "40ft Standard Flat Rack",
+    "40ft High Cube Flat Rack",
+]
+
+
+def get_equipment_profile(eq_name: str):
+    return EQUIPMENT_PROFILES[eq_name]
+
+
+def placements_to_cargos(placements: List[Placement]) -> List[Cargo]:
+    return [
+        Cargo(
+            sku=p.sku,
+            name=p.name,
+            length=p.l,
+            width=p.w,
+            height=p.h,
+            weight=p.weight,
+            is_stackable=p.is_stackable,
+            max_stack=p.max_stack,
+        )
+        for p in placements
+    ]
+
+
+def fit_group_to_equipment(placements: List[Placement], eq_name: str, allow_rotation: bool):
+    profile = get_equipment_profile(eq_name)
+    group_cargos = placements_to_cargos(placements)
+    repacked, unplaced = pack_cargo_3d(
+        group_cargos,
+        profile["dl"], profile["dw"], profile["dh"], profile["max_w"],
+        is_flat_rack=profile["is_flat_rack"],
+        allow_rotation=allow_rotation,
+    )
+    fits_all = len(unplaced) == 0 and len(repacked) == len(group_cargos)
+    return fits_all, repacked
+
+
+def valid_equipment_options_for_group(placements: List[Placement], allow_rotation: bool):
+    options = []
+    for eq_name in SECONDARY_EQUIPMENT_PRIORITY:
+        fits_all, _ = fit_group_to_equipment(placements, eq_name, allow_rotation)
+        if fits_all:
+            options.append(eq_name)
+    return options
+
 if 'c_list' not in st.session_state:
     st.session_state.c_list = [
         Cargo("10", "item 1", 2.00, 1.00, 1.50, 1000, False, 1),
@@ -324,14 +385,15 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
     )
     return fig
 
-def generate_excel(all_containers_manifest, eq_type):
+def generate_excel(all_containers_manifest, container_equipment_types):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         summary_rows = []
         for c_idx, df_manifest in enumerate(all_containers_manifest):
+            equipment_name = container_equipment_types[c_idx]
             summary_rows.append({
                 "Container": f"Konteyner #{c_idx+1}",
-                "Equipment": eq_type,
+                "Equipment": equipment_name,
                 "Total Items": len(df_manifest),
                 "Total Cargo Weight (kg)": df_manifest["Weight (kg)"].sum()
             })
@@ -466,65 +528,108 @@ with st.expander("📦 Kargo Listesini Düzenle / Yeni Ekle / Excel Yükle", exp
                 st.error(f"Format Hatası: {e}")
 
 # ============================================================
-# AŞAMA 2: YATAY AYARLAR & HAPAG PAYLOAD VE NOTLAR
+# AŞAMA 2: EKİPMAN AYARLARI & ÇOKLU KONTEYNER OPTİMİZASYONU
 # ============================================================
 st.markdown("---")
 ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
 
 with ctrl1:
     eq_type = st.selectbox(
-        "🚛 Ekipman Tipi Seçiniz",
-        [
-            "20ft Flat Rack",
-            "40ft Standard Flat Rack",
-            "40ft High Cube Flat Rack",
-            "20ft Standard Open Top",
-            "40ft Standard Open Top",
-            "40ft High Cube Open Top"
-        ]
+        "🚛 Ana / İlk Konteyner Ekipman Tipi",
+        list(EQUIPMENT_PROFILES.keys()),
+        index=list(EQUIPMENT_PROFILES.keys()).index("40ft High Cube Flat Rack")
+        if "40ft High Cube Flat Rack" in EQUIPMENT_PROFILES else 0,
     )
-    
-    is_flat_rack = "Flat Rack" in eq_type
-
-    if eq_type == "20ft Flat Rack":
-        dl, dw, dh, max_w = 5.50, 2.43, 2.20, 31000.0
-    elif eq_type == "40ft Standard Flat Rack":
-        dl, dw, dh, max_w = 11.60, 2.43, 1.92, 39000.0
-    elif eq_type == "40ft High Cube Flat Rack":
-        dl, dw, dh, max_w = 11.60, 2.43, 2.25, 39000.0
-    elif eq_type == "20ft Standard Open Top":
-        dl, dw, dh, max_w = 5.33, 2.23, 2.34, 28100.0
-    elif eq_type == "40ft Standard Open Top":
-        dl, dw, dh, max_w = 11.55, 2.23, 2.34, 26500.0
-    elif eq_type == "40ft High Cube Open Top":
-        dl, dw, dh, max_w = 11.55, 2.19, 2.65, 26200.0
+    primary_profile = get_equipment_profile(eq_type)
+    dl = primary_profile["dl"]
+    dw = primary_profile["dw"]
+    dh = primary_profile["dh"]
+    max_w = primary_profile["max_w"]
+    is_flat_rack = primary_profile["is_flat_rack"]
 
 with ctrl2:
     allow_rot = st.checkbox("🔄 Kargoları 90° Döndürmeye İzin Ver", value=False)
-    st.caption("Kapalıyken girilen Boy değeri X ekseninde sabit kalır. Açılırsa En/Boy 90° çevrilebilir ve konteyner adedi değişebilir.")
+    st.caption("Kapalıyken girilen Boy değeri X ekseninde sabit kalır. Açılırsa En/Boy 90° çevrilebilir.")
 
-containers = pack_multi_container(st.session_state.c_list, dl, dw, dh, max_w, is_flat_rack=is_flat_rack, allow_rotation=allow_rot)
+    optimize_secondary = st.checkbox(
+        "♻️ 2. ve sonraki konteynerleri daha küçük ekipmana optimize et",
+        value=True,
+    )
+    st.caption("Örn. kalan yük 20' OT'a tamamen sığıyorsa 40HC FR yerine 20' OT önerilir.")
+
+base_containers = pack_multi_container(
+    st.session_state.c_list, dl, dw, dh, max_w,
+    is_flat_rack=is_flat_rack, allow_rotation=allow_rot
+)
+
+containers = []
+container_equipment_types = []
+
+if base_containers:
+    for idx, base_placements in enumerate(base_containers):
+        if idx == 0:
+            chosen_eq = eq_type
+            chosen_placements = base_placements
+        else:
+            valid_options = valid_equipment_options_for_group(base_placements, allow_rot)
+            if eq_type not in valid_options:
+                valid_options.append(eq_type)
+
+            if optimize_secondary and valid_options:
+                default_eq = valid_options[0]
+            else:
+                default_eq = eq_type
+
+            chosen_eq = st.selectbox(
+                f"🚛 Konteyner #{idx+1} ekipman tipi",
+                options=valid_options,
+                index=valid_options.index(default_eq) if default_eq in valid_options else 0,
+                key=f"equipment_override_{idx+1}",
+                help="Listede yalnızca bu konteynerdeki tüm yükleri fiziksel olarak taşıyabilen ekipmanlar gösterilir.",
+            )
+
+            fits_all, repacked = fit_group_to_equipment(base_placements, chosen_eq, allow_rot)
+            if fits_all:
+                chosen_placements = repacked
+            else:
+                st.warning(
+                    f"Konteyner #{idx+1} için {chosen_eq} seçimi tüm yükleri taşımıyor. "
+                    f"Ana ekipman olan {eq_type} kullanıldı."
+                )
+                chosen_eq = eq_type
+                chosen_placements = base_placements
+
+        profile = get_equipment_profile(chosen_eq)
+        containers.append({
+            "equipment": chosen_eq,
+            "dl": profile["dl"],
+            "dw": profile["dw"],
+            "dh": profile["dh"],
+            "max_w": profile["max_w"],
+            "is_flat_rack": profile["is_flat_rack"],
+            "placements": chosen_placements,
+        })
+        container_equipment_types.append(chosen_eq)
 
 with ctrl3:
     st.metric("Gerekli Toplam Konteyner", f"{len(containers)} Adet")
-
-eq_category = "Flat Rack" if is_flat_rack else "Open Top"
-current_remarks = HAPAG_REMARKS[eq_category]
-
-with st.expander(f"📋 Hapag-Lloyd {eq_category} Operasyonel & Lashing Notları", expanded=True):
-    for r in current_remarks:
-        st.markdown(r)
+    if containers and len(set(container_equipment_types)) > 1:
+        st.success("Karışık ekipman planı aktif")
 
 # ============================================================
 # AŞAMA 3: SİMÜLASYON VE RAPORLAMA EKRANI
 # ============================================================
 if containers:
-    # Tüm konteyner manifestolarını önce hazırla (Excel raporu için)
     all_manifests = []
-    for placements_all in containers:
+    for container in containers:
+        c_dl = container["dl"]
+        c_dw = container["dw"]
+        c_dh = container["dh"]
+        placements_all = container["placements"]
+
         report_rows = []
         for p in placements_all:
-            oog = calculate_oog(p.x, p.y, p.z, p.l, p.w, p.h, dl, dw, dh)
+            oog = calculate_oog(p.x, p.y, p.z, p.l, p.w, p.h, c_dl, c_dw, c_dh)
             is_oog = "Yes" if any(v > 0 for v in oog.values()) else "No"
             report_rows.append({
                 "SKU": p.sku,
@@ -542,27 +647,33 @@ if containers:
             })
         all_manifests.append(pd.DataFrame(report_rows))
 
-    # Konteyner seçici: İç içe tab yapısı yerine tek ve net seçim
     st.markdown("### 🚢 Konteyner Yükleme Planı")
     selected_container_no = st.selectbox(
         "Görüntülenecek Konteyner",
         options=list(range(1, len(containers) + 1)),
-        format_func=lambda n: f"📦 Konteyner #{n}",
+        format_func=lambda n: f"📦 Konteyner #{n} — {containers[n-1]['equipment']}",
         key="selected_container_no",
     )
 
     idx = selected_container_no - 1
-    placements = containers[idx]
+    selected_container = containers[idx]
+    placements = selected_container["placements"]
+    selected_eq_type = selected_container["equipment"]
+    c_dl = selected_container["dl"]
+    c_dw = selected_container["dw"]
+    c_dh = selected_container["dh"]
+    c_max_w = selected_container["max_w"]
+    c_is_flat_rack = selected_container["is_flat_rack"]
     df_manifest = all_manifests[idx]
 
     st.caption(
         f"Toplam {len(containers)} konteyner gerekiyor. "
-        f"Şu anda Konteyner #{selected_container_no} görüntüleniyor."
+        f"Şu anda Konteyner #{selected_container_no} — {selected_eq_type} görüntüleniyor."
     )
 
     total_w = sum(p.weight for p in placements)
     max_len_used = max([p.x + p.l for p in placements]) if placements else 0.0
-    len_util = (max_len_used / dl) * 100 if dl > 0 else 0
+    len_util = (max_len_used / c_dl) * 100 if c_dl > 0 else 0
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
@@ -579,32 +690,38 @@ if containers:
         )
     with m3:
         st.markdown(
-            f'<div class="metric-card"><div class="metric-title">MAX ALLOWED PAYLOAD</div>'
-            f'<div class="metric-value">{max_w:,.0f} KG</div></div>',
+            f'<div class="metric-card"><div class="metric-title">EKİPMAN / PAYLOAD</div>'
+            f'<div class="metric-value" style="font-size:16px">{selected_eq_type}<br>{c_max_w:,.0f} KG</div></div>',
             unsafe_allow_html=True,
         )
     with m4:
+        selected_category = "Flat Rack" if c_is_flat_rack else "Open Top"
+        selected_remarks = HAPAG_REMARKS[selected_category]
         try:
-            fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
+            fig_2d = create_2d_figure(placements, c_dl, c_dw, c_dh, max_len_used)
             pdf_data = generate_pdf(
                 df_manifest,
                 fig_2d,
-                eq_type,
+                selected_eq_type,
                 len_util,
                 total_w,
                 selected_container_no,
-                current_remarks,
+                selected_remarks,
             )
             st.download_button(
                 label=f"📄 Konteyner #{selected_container_no} PDF Raporu İndir",
                 data=pdf_data,
-                file_name=f"container_{selected_container_no}_manifest.pdf",
+                file_name=f"container_{selected_container_no}_{selected_eq_type.replace(' ', '_')}.pdf",
                 mime="application/pdf",
-                key=f"pdf_btn_selected_{selected_container_no}",
+                key=f"pdf_btn_selected_{selected_container_no}_{selected_eq_type}",
             )
         except Exception as e:
             st.error(f"PDF oluşturulamadı: {e}")
-            fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
+            fig_2d = create_2d_figure(placements, c_dl, c_dw, c_dh, max_len_used)
+
+    with st.expander(f"📋 Hapag-Lloyd {selected_category} Operasyonel & Lashing Notları", expanded=False):
+        for r in selected_remarks:
+            st.markdown(r)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -616,8 +733,8 @@ if containers:
 
     with v_tab1:
         st.plotly_chart(
-            render_3d_plotly(placements, dl, dw, dh),
-            key=f"plotly_main_selected_{selected_container_no}",
+            render_3d_plotly(placements, c_dl, c_dw, c_dh),
+            key=f"plotly_main_selected_{selected_container_no}_{selected_eq_type}",
             use_container_width=True,
         )
 
@@ -628,7 +745,19 @@ if containers:
         st.dataframe(df_manifest, use_container_width=True)
 
     st.markdown("---")
-    excel_data = generate_excel(all_manifests, eq_type)
+    st.markdown("#### 📦 Ekipman Özeti")
+    summary_df = pd.DataFrame([
+        {
+            "Konteyner": f"#{i+1}",
+            "Ekipman": c["equipment"],
+            "Yük Adedi": len(c["placements"]),
+            "Toplam Ağırlık (kg)": sum(p.weight for p in c["placements"]),
+        }
+        for i, c in enumerate(containers)
+    ])
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    excel_data = generate_excel(all_manifests, container_equipment_types)
     st.download_button(
         label="📊 Tüm Konteynerlerin Detaylı Excel Raporunu İndir (.xlsx)",
         data=excel_data,
