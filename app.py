@@ -104,7 +104,7 @@ def is_overlapping(p1: Placement, candidate_box):
     )
 
 def is_valid_placement(pt_x, pt_y, pt_z, cl, cw, ch, dl, dw=2.43, max_oog_width=5.0):
-    # KESİN UZUNLUK KONTROLÜ (1160 cm / dl değerini geçen hiçbir yerleşime izin verilmez)
+    # KESİN SINIR KONTROLÜ: x + cl toplamı konteyner boyundan (dl) büyükse KESİNLİKLE YASAK!
     if (pt_x + cl) > dl + 0.0001:
         return False
 
@@ -163,7 +163,8 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
     allowed_max_w = MAX_OOG_WIDTH if is_flat_rack else dw
 
-    sorted_cargos = sorted(cargos, key=lambda c: (not c.is_stackable, c.weight, c.length * c.width * c.height), reverse=True)
+    # EN BÜYÜK BOYUTTAKİ KARGOLARI EN BAŞA ALIYORUZ (Böylece 10.23m kargo x=0.0 noktasından başlar)
+    sorted_cargos = sorted(cargos, key=lambda c: (max(c.length, c.width), c.weight), reverse=True)
 
     for cargo in sorted_cargos:
         if current_weight + cargo.weight > max_w:
@@ -176,7 +177,7 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         placed = False
         
-        # Olası oryantasyonlar
+        # Olası en-boy seçenekleri
         orientations = []
         if cargo.length <= dl + 0.0001 and cargo.width <= allowed_max_w + 0.0001:
             orientations.append((cargo.length, cargo.width))
@@ -197,10 +198,15 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
                 (p.x, p.y, p.z + p.h),
             ])
 
+        # Koordinatları Z, X, Y sırasına göre sırala
         candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[2], pt[0], pt[1]))
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
+                # KESİN FİZİKSEL SINIR: x + kargo_boyu asla dl (11.60m) değerinden büyük olamaz!
+                if (pt_x + cl) > dl + 0.0001:
+                    continue
+
                 if not is_valid_placement(pt_x, pt_y, pt_z, cl, cw, cargo.height, dl=dl, dw=dw, max_oog_width=allowed_max_w):
                     continue
 
@@ -234,7 +240,7 @@ def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, m
     while len(remaining_cargos) > 0:
         placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, is_flat_rack, allow_rotation)
         if not placements:
-            st.warning(f"⚠️ Sığmayan / Limit Aşan Kargolar 2. Konteynere Aktarılamadı: {[c.name for c in unplaced]}")
+            st.error(f"⚠️ Sığmayan veya Limitleri Aşan Kargolar: {[c.name for c in unplaced]}")
             break
         containers.append(placements)
         remaining_cargos = unplaced
@@ -268,9 +274,9 @@ def create_2d_figure(placements: List[Placement], dl: float, dw: float, dh: floa
         ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, edgecolor='black', facecolor=c_color, alpha=0.5, linewidth=1))
         ax3.text(p.y + p.w/2, p.z + p.h/2, f"{p.sku}", ha='center', va='center', color='black', fontweight='bold', fontsize=7)
 
-    max_x_bound = max(dl + 1, max_len_used + 1)
-    max_y_bound = max(dw + 1, max([p.y + p.w for p in placements] + [dw]) + 1) if placements else dw + 1
-    max_z_bound = max(dh + 1, max([p.z + p.h for p in placements] + [dh]) + 1) if placements else dh + 1
+    max_x_bound = max(dl + 0.5, max_len_used + 0.5)
+    max_y_bound = max(dw + 0.5, max([p.y + p.w for p in placements] + [dw]) + 0.5) if placements else dw + 0.5
+    max_z_bound = max(dh + 0.5, max([p.z + p.h for p in placements] + [dh]) + 0.5) if placements else dh + 0.5
 
     ax1.set_xlim(-0.5, max_x_bound); ax1.set_ylim(-0.5, max_y_bound); ax1.grid(True, linestyle=':', alpha=0.5)
     ax2.set_xlim(-0.5, max_x_bound); ax2.set_ylim(-0.5, max_z_bound); ax2.grid(True, linestyle=':', alpha=0.5)
@@ -283,7 +289,7 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
     fig = go.Figure()
     colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
 
-    # Konteyner Tabanı Çerçevesi
+    # Konteyner Tabanı Çerçevesi (Tam dl, dw, dh ölçülerinde)
     fig.add_trace(go.Scatter3d(
         x=[0, dl, dl, 0, 0, 0, dl, dl, 0, 0, 0, 0, dl, dl, dl, dl],
         y=[0, 0, dw, dw, 0, 0, 0, dw, dw, 0, dw, dw, dw, 0, 0, dw],
@@ -291,16 +297,14 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
         mode='lines', line=dict(color='#334155', width=4), name='Container Frame'
     ))
 
-    # TAMAMEN DÜZELTİLMİŞ KÜP KÖŞE VEYA YÜZEY İNDEKS HARİTASI
+    # KÜP KÖŞE VE ÜÇGEN YÜZEY İNDEKS HARİTASI
     for idx, p in enumerate(placements):
         c_color = colors[idx % len(colors)]
 
-        # 8 Adet Köşe Noktası
         x_pts = [p.x, p.x+p.l, p.x+p.l, p.x, p.x, p.x+p.l, p.x+p.l, p.x]
         y_pts = [p.y, p.y, p.y+p.w, p.y+p.w, p.y, p.y, p.y+p.w, p.y+p.w]
         z_pts = [p.z, p.z, p.z, p.z, p.z+p.h, p.z+p.h, p.z+p.h, p.z+p.h]
 
-        # Küpü oluşturan 12 adet standart üçgen yüzey indeksi
         i_ind = [0, 0, 4, 4, 0, 0, 3, 3, 0, 1, 1, 2]
         j_ind = [1, 2, 5, 6, 1, 5, 2, 6, 3, 2, 5, 6]
         k_ind = [2, 3, 6, 7, 5, 4, 6, 7, 7, 6, 6, 7]
@@ -316,7 +320,7 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
 
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title='Uzunluk / X (m)', range=[0, max(dl, 12)]),
+            xaxis=dict(title='Uzunluk / X (m)', range=[0, dl]),
             yaxis=dict(title='Genişlik / Y (m)', range=[0, 5]),
             zaxis=dict(title='Yükseklik / Z (m)', range=[0, 5]),
             aspectmode='data'
