@@ -156,29 +156,50 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
             unplaced.append(cargo)
             continue
 
-        # AĞIRLIK MERKEZİ (CG) HESABI: Ağır parçaları merkeze hizala
-        start_x_offset = 0.0
-        if cargo.weight > (max_w * 0.4) and cargo.length < (dl * 0.9):
-            start_x_offset = max(0.0, (dl - cargo.length) / 2.0)
+        for cl, cw in orientations:
+            # 1. Y-EKSEENİ SIMETRİK ORTALAMA HESABI (OOG Genişlik için)
+            if cw > dw:
+                # Tabanı aşan kargoyu konteynerin Y ekseninde tam ortala
+                y_positions = [(dw - cw) / 2.0]
+            else:
+                y_positions = [0.0]
 
-        candidate_points = [(start_x_offset, 0.0, 0.0), (0.0, 0.0, 0.0)]
-        for p in placements:
-            candidate_points.extend([
-                (p.x + p.l, p.y, p.z),
-                (p.x, p.y + p.w, p.z),
-                (p.x, p.y, p.z + p.h),
-            ])
+            # 2. X-EKSENİ AĞIRLIK MERKEZİ HESABI
+            # Ağır kargo için öncelikli yerleştirme noktası (Taban ortası)
+            start_x_offset = 0.0
+            if cargo.weight > (max_w * 0.4) and cl < (dl * 0.9):
+                start_x_offset = (dl - cl) / 2.0
 
-        candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[0], pt[1], pt[2]))
+            candidate_points = [(start_x_offset, y_pos, 0.0) for y_pos in y_positions] + [(0.0, y_pos, 0.0) for y_pos in y_positions]
+            
+            for p in placements:
+                for y_pos in y_positions:
+                    candidate_points.extend([
+                        (p.x + p.l, y_pos, p.z),
+                        (p.x, y_pos, p.z + p.h),
+                    ])
+                    if cw <= dw and (p.y + p.w) <= dw:
+                        candidate_points.append((p.x, p.y + p.w, p.z))
 
-        for pt_x, pt_y, pt_z in candidate_points:
-            for cl, cw in orientations:
-                # KATI UZUNLUK KONTROLÜ (Uzunluk kesinlikle geçilemez)
-                if round(pt_x + cl, 4) > round(dl, 4):
+            candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[0], pt[1], pt[2]))
+
+            for pt_x, pt_y, pt_z in candidate_points:
+                # KATI X SIFIR VE SON SINIR KONTROLÜ
+                if pt_x < 0.0 or round(pt_x + cl, 4) > round(dl, 4):
                     continue
 
-                # KATI GENİŞLİK KONTROLÜ (OOG Dahil Max Genişlik)
-                if round(pt_y + cw, 4) > round(MAX_OOG_WIDTH, 4):
+                # KATI OOG GENİŞLİK ÇAKIŞMA KONTROLÜ
+                # Mevcut veya yeni kargolardan herhangi biri OOG genişlikteyse aynı X hizasını paylaşamazlar
+                conflict = False
+                for p in placements:
+                    # X ekseninde çakışıyorlar mı?
+                    overlap_x = min(pt_x + cl, p.x + p.l) - max(pt_x, p.x)
+                    if overlap_x > 0.001:
+                        if cw > dw or p.w > dw:
+                            conflict = True
+                            break
+
+                if conflict:
                     continue
 
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
@@ -196,6 +217,7 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
                 current_weight += cargo.weight
                 placed = True
                 break
+
             if placed:
                 break
 
@@ -245,13 +267,14 @@ def create_2d_figure(placements: List[Placement], dl: float, dw: float, dh: floa
         ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, edgecolor='black', facecolor=c_color, alpha=0.5, linewidth=1))
         ax3.text(p.y + p.w/2, p.z + p.h/2, f"{p.sku}", ha='center', va='center', color='black', fontweight='bold', fontsize=7)
 
+    min_y_bound = min([p.y for p in placements] + [0.0]) - 0.5 if placements else -0.5
     max_x_bound = max(dl + 0.5, max_len_used + 0.5)
     max_y_bound = max(dw + 0.5, max([p.y + p.w for p in placements] + [dw]) + 0.5) if placements else dw + 0.5
     max_z_bound = max(dh + 0.5, max([p.z + p.h for p in placements] + [dh]) + 0.5) if placements else dh + 0.5
 
-    ax1.set_xlim(-0.5, max_x_bound); ax1.set_ylim(-0.5, max_y_bound); ax1.grid(True, linestyle=':', alpha=0.5)
+    ax1.set_xlim(-0.5, max_x_bound); ax1.set_ylim(min_y_bound, max_y_bound); ax1.grid(True, linestyle=':', alpha=0.5)
     ax2.set_xlim(-0.5, max_x_bound); ax2.set_ylim(-0.5, max_z_bound); ax2.grid(True, linestyle=':', alpha=0.5)
-    ax3.set_xlim(-0.5, max_y_bound); ax3.set_ylim(-0.5, max_z_bound); ax3.grid(True, linestyle=':', alpha=0.5)
+    ax3.set_xlim(min_y_bound, max_y_bound); ax3.set_ylim(-0.5, max_z_bound); ax3.grid(True, linestyle=':', alpha=0.5)
     
     plt.tight_layout()
     return fig
@@ -288,10 +311,13 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
             hovertext=f"<b>{p.name}</b> (SKU: {p.sku})<br>Boyut: {p.l:.2f} x {p.w:.2f} x {p.h:.2f} m<br>Ağırlık: {p.weight} kg"
         ))
 
+    min_y_val = min([p.y for p in placements] + [0.0]) if placements else 0.0
+    max_y_val = max([p.y + p.w for p in placements] + [dw]) if placements else dw
+
     fig.update_layout(
         scene=dict(
             xaxis=dict(title='Uzunluk / X (m)', range=[0, max(dl, 12)]),
-            yaxis=dict(title='Genişlik / Y (m)', range=[0, 5]),
+            yaxis=dict(title='Genişlik / Y (m)', range=[min_y_val - 0.5, max_y_val + 0.5]),
             zaxis=dict(title='Yükseklik / Z (m)', range=[0, 5]),
             aspectmode='data'
         ),
