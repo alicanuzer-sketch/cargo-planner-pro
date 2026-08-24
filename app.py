@@ -68,7 +68,6 @@ class Placement:
     stack_layer: int
     max_stack: int
 
-# Hapag-Lloyd Standart Notları
 HAPAG_REMARKS = {
     "Flat Rack": [
         "📌 **Lashing Points:** Tüm kargolar Hapag-Lloyd lashing gözlerine min. 5T kapasiteli şerit/zincir ile sabitlenmelidir.",
@@ -88,11 +87,8 @@ HAPAG_REMARKS = {
 # ============================================================
 if 'c_list' not in st.session_state:
     st.session_state.c_list = [
-        Cargo("10", "Main Machine", 3.50, 1.20, 1.70, 2200, False, 1),
-        Cargo("13", "Transformer Box", 4.90, 1.10, 2.20, 8000, False, 1),
-        Cargo("7", "Control Unit", 3.50, 1.00, 1.20, 2100, True, 2),
-        Cargo("15", "Accessory Kit", 0.90, 0.90, 0.55, 180, True, 4),
-        Cargo("16", "Extra Box", 1.20, 0.80, 0.80, 350, True, 3)
+        Cargo("10", "item 1", 2.00, 1.00, 1.50, 1000, False, 1),
+        Cargo("11", "item 2", 10.23, 3.15, 2.65, 24800, False, 1)
     ]
 
 # ============================================================
@@ -135,7 +131,7 @@ def check_stacking_validity(candidate_box, placements: List[Placement]):
 
     return True, max_layer_below + 1
 
-def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: float, allow_rotation=True):
+def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: float, is_flat_rack: bool = True, allow_rotation=True):
     placements: List[Placement] = []
     unplaced = []
     current_weight = 0.0
@@ -164,8 +160,18 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                if (pt_x + cl > dl + 0.01 and dl > 0) or (pt_y + cw > dw + 0.01 and dw > 0):
+                # BOYUT KONTROLLERİ:
+                # 1. Uzunluk sınırı (dl) tüm ekipmanlarda geçerlidir.
+                if pt_x + cl > dl + 0.01 and dl > 0:
                     continue
+                
+                # 2. En sınırı (dw): Flat Rack'te engel değildir (OOG olur), ancak Open Top'ta yan duvarlar olduğu için engeldir.
+                if not is_flat_rack:
+                    if pt_y + cw > dw + 0.01 and dw > 0:
+                        continue
+                
+                # NOT: Yükseklik (dh) kontrolü kaldırılmıştır! 
+                # Hem Flat Rack hem de Open Top için yükseklik aşımı yüklemeye engel olmaz, sadece OOG Top üretir.
                 
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
                 if any(is_overlapping(existing, candidate_box) for existing in placements):
@@ -190,12 +196,12 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
     return placements, unplaced
 
-def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: float, allow_rotation=True):
+def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: float, is_flat_rack: bool = True, allow_rotation=True):
     containers = []
     remaining_cargos = cargos.copy()
 
     while len(remaining_cargos) > 0:
-        placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, allow_rotation)
+        placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, is_flat_rack, allow_rotation)
         if not placements:
             st.warning(f"⚠️ Dikkat: Bazı kargolar boyut/ağırlık limitleri nedeniyle yüklenemedi: {[c.name for c in unplaced]}")
             break
@@ -232,9 +238,12 @@ def create_2d_figure(placements: List[Placement], dl: float, dw: float, dh: floa
         ax3.text(p.y + p.w/2, p.z + p.h/2, f"{p.sku}", ha='center', va='center', color='black', fontweight='bold', fontsize=7)
 
     max_x_bound = max(dl + 1, max_len_used + 1)
-    ax1.set_xlim(-0.5, max_x_bound); ax1.set_ylim(-0.5, dw + 1); ax1.grid(True, linestyle=':', alpha=0.5)
-    ax2.set_xlim(-0.5, max_x_bound); ax2.set_ylim(-0.5, dh + 1); ax2.grid(True, linestyle=':', alpha=0.5)
-    ax3.set_xlim(-0.5, dw + 1); ax3.set_ylim(-0.5, dh + 1); ax3.grid(True, linestyle=':', alpha=0.5)
+    max_y_bound = max(dw + 1, max([p.y + p.w for p in placements] + [dw]) + 1) if placements else dw + 1
+    max_z_bound = max(dh + 1, max([p.z + p.h for p in placements] + [dh]) + 1) if placements else dh + 1
+
+    ax1.set_xlim(-0.5, max_x_bound); ax1.set_ylim(-0.5, max_y_bound); ax1.grid(True, linestyle=':', alpha=0.5)
+    ax2.set_xlim(-0.5, max_x_bound); ax2.set_ylim(-0.5, max_z_bound); ax2.grid(True, linestyle=':', alpha=0.5)
+    ax3.set_xlim(-0.5, max_y_bound); ax3.set_ylim(-0.5, max_z_bound); ax3.grid(True, linestyle=':', alpha=0.5)
     
     plt.tight_layout()
     return fig
@@ -325,7 +334,6 @@ def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num, remarks_l
     ]))
     story.append(t)
     
-    # Hapag-Lloyd Remarks PDF Ekleniyor
     story.append(Spacer(1, 8))
     story.append(Paragraph("<b>Hapag-Lloyd Operational & Lashing Remarks:</b>", styles['Heading3']))
     for r in remarks_list:
@@ -438,7 +446,9 @@ with ctrl1:
         ]
     )
     
-    # Hapag-Lloyd Gerçek Net Yük Kapasiteleri (Max Allowed Payload KG)
+    is_flat_rack = "Flat Rack" in eq_type
+
+    # Hapag-Lloyd Net Yük Kapasiteleri
     if eq_type == "20ft Flat Rack":
         dl, dw, dh, max_w = 5.50, 2.43, 2.20, 31000.0
     elif eq_type == "40ft Standard Flat Rack":
@@ -456,13 +466,12 @@ with ctrl2:
     allow_rot = st.checkbox("🔄 Kargoları 90° Döndürmeye İzin Ver", value=True)
     st.caption("En/Boy optimizasyonu için kargolar otomatik çevrilir.")
 
-containers = pack_multi_container(st.session_state.c_list, dl, dw, dh, max_w, allow_rotation=allow_rot)
+containers = pack_multi_container(st.session_state.c_list, dl, dw, dh, max_w, is_flat_rack=is_flat_rack, allow_rotation=allow_rot)
 
 with ctrl3:
     st.metric("Gerekli Toplam Konteyner", f"{len(containers)} Adet")
 
-# Hapag-Lloyd Notlarını Arayüzde Gösterme
-eq_category = "Flat Rack" if "Flat Rack" in eq_type else "Open Top"
+eq_category = "Flat Rack" if is_flat_rack else "Open Top"
 current_remarks = HAPAG_REMARKS[eq_category]
 
 with st.expander(f"📋 Hapag-Lloyd {eq_category} Operasyonel & Lashing Notları", expanded=True):
@@ -483,7 +492,6 @@ if containers:
             max_len_used = max([p.x + p.l for p in placements]) if placements else 0.0
             len_util = (max_len_used / dl) * 100 if dl > 0 else 0
             
-            # Üst Özet Kartları (Maks Taşıma -> MAX ALLOWED PAYLOAD Değişikliği)
             m1, m2, m3, m4 = st.columns(4)
             with m1: st.markdown(f'<div class="metric-card"><div class="metric-title">Uzunluk Doluluğu</div><div class="metric-value">%{len_util:.1f}</div></div>', unsafe_allow_html=True)
             with m2: st.markdown(f'<div class="metric-card"><div class="metric-title">Toplam Yük Ağırlığı</div><div class="metric-value">{total_w:,.0f} KG</div></div>', unsafe_allow_html=True)
@@ -501,7 +509,6 @@ if containers:
                 df_manifest = pd.DataFrame(report_data)
                 all_manifests.append(df_manifest)
 
-                # PDF ÜRETİMİ
                 try:
                     fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
                     pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w, idx+1, current_remarks)
@@ -517,7 +524,6 @@ if containers:
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # Visual Tabs
             v_tab1, v_tab2, v_tab3 = st.tabs(["🧊 İnteraktif 3D Yükleme Modeli", "📐 2D Teknik Çizim Paftası", "📋 Yükleme Manifestosu & Koordinatlar"])
             
             with v_tab1:
@@ -529,7 +535,6 @@ if containers:
             with v_tab3:
                 st.dataframe(df_manifest)
 
-    # Excel Toplu İndirme
     st.markdown("---")
     excel_data = generate_excel(all_manifests, eq_type)
     st.download_button(
