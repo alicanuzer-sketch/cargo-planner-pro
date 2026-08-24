@@ -1,103 +1,508 @@
 import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import plotly.graph_objects as go
+from dataclasses import dataclass
+from typing import List
+import io
 
-# Sayfa Yapılandırması
-st.set_page_config(
-    page_title="Cargo Planner & OOG Checker",
-    page_icon="📦",
-    layout="wide"
-)
+# ReportLab kütüphaneleri (PDF üretimi için)
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors as rl_colors
 
-# ==============================================================================
-# VERİ YAPILARI & LİMİTLER
-# ==============================================================================
-EQUIPMENT_RULES = {
-    "20GP": {"name": "20' Standard Dry", "max_len": 590, "max_width": 235, "max_height": 239, "type": "std"},
-    "40GP": {"name": "40' Standard Dry", "max_len": 1203, "max_width": 235, "max_height": 239, "type": "std"},
-    "40HC": {"name": "40' High Cube", "max_len": 1203, "max_width": 235, "max_height": 269, "type": "std"},
-    "20OT": {"name": "20' Open Top", "max_len": 589, "max_width": 234, "max_height": 234, "type": "ot"},
-    "40OT": {"name": "40' Open Top", "max_len": 1202, "max_width": 234, "max_height": 234, "type": "ot"},
-    "20FR": {"name": "20' Flatrack", "oog_len": 563, "oog_width": 243, "oog_height": 221, "type": "fr"},
-    "40FR_STD": {"name": "40' Standard Flatrack", "oog_len": 1160, "oog_width": 243, "oog_height": 192, "type": "fr"},
-    "PLATFORM": {"name": "Platform", "max_len_overflow": 1160, "max_width_overflow": 216, "type": "plt"}
-}
+# ============================================================
+# CONFIG & PROFESSIONAL STYLING
+# ============================================================
+st.set_page_config(page_title="Cargo Planner Pro", page_icon="📦", layout="wide")
 
-HAPAG_LLOYD_NOTES = [
-    "Madde 16 - Hidrolik Sistemler: Hidrolikler sıfır seviyesine indirilmeden lashing yapılmamalıdır. 2 saat sonra tekrar kontrol edilmelidir.",
-    "Madde 17 - Trafo Yüklemeleri: Azot tüpü basıncı >2 bar ise DG etiketlemesi yapılmalıdır. Gösterge okunabilir olmalıdır.",
-    "Madde 18 - Araç & İş Makinesi: Akü kutup başları sökülmeli, depoda yakıt olmadığı belgelenmelidir.",
-    "Madde 19/20 - Flatrack: En fazla 4 parça yüklenebilir. Yükler kasa yapılarak sabitlenmelidir.",
-    "Madde 21 - Cam İçerik: Temperli olmayan cam yüzeyler strafor veya kontrplak ile kapatılmalıdır.",
-    "Madde 22 - Platform: Önden/arkadan taşan yüklerde genişlik 216 cm'yi geçemez."
-]
+st.markdown("""
+    <style>
+    /* Genel Arayüz Yumuşatma */
+    .main { background-color: #f8f9fa; }
+    
+    /* Metrik Kart Tasarımları */
+    .metric-card {
+        background-color: #ffffff;
+        padding: 18px;
+        border-radius: 10px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        border-top: 4px solid #0068C9;
+        text-align: center;
+    }
+    .metric-title { font-size: 12px; color: #6c757d; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-value { font-size: 22px; color: #1e293b; font-weight: 800; margin-top: 4px; }
+    
+    /* İndirme Buton Konteynerı */
+    .stDownloadButton > button {
+        width: 100%;
+        border-radius: 8px;
+        font-weight: 600;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-def check_cargo(equipment_code, cargo_len, cargo_width, cargo_height):
-    eq = EQUIPMENT_RULES.get(equipment_code)
-    if not eq:
-        return {"is_oog": False, "warnings": ["Hata: Tanımsız ekipman kuralı."]}
+# Header
+st.title("🚢 Cargo Planner Pro - Yükleme Simülasyonu")
+st.caption("Endüstriyel Özel Ekipman (Flat Rack & Open Top) Yük Planlama ve 3D Görselleştirme")
 
-    oog_status = []
-    eq_type = eq.get("type")
+# ============================================================
+# DATA MODELS
+# ============================================================
+@dataclass
+class Cargo:
+    sku: str
+    name: str
+    length: float
+    width: float
+    height: float
+    weight: float
+    is_stackable: bool = True
+    max_stack: int = 10
 
-    if eq_type == "fr":
-        if cargo_len > eq["oog_len"]:
-            oog_status.append(f"Boydan Taşma (Over Length) - Dikme Dışı (> {eq['oog_len']} cm)")
-        if cargo_width > eq["oog_width"]:
-            oog_status.append(f"Enden Taşma (Over Width) (> {eq['oog_width']} cm)")
-        if cargo_height > eq["oog_height"]:
-            oog_status.append(f"Yüksekten Taşma (Over Height) (> {eq['oog_height']} cm)")
+@dataclass
+class Placement:
+    sku: str
+    name: str
+    x: float; y: float; z: float
+    l: float; w: float; h: float
+    weight: float
+    is_stackable: bool
+    stack_layer: int
+    max_stack: int
 
-    elif eq_type == "plt":
-        if cargo_len > eq["max_len_overflow"] and cargo_width > eq["max_width_overflow"]:
-            oog_status.append(f"Hapag Madde 22 İhlali: Taşmalı yüklerde genişlik {eq['max_width_overflow']} cm'yi geçemez!")
+# ============================================================
+# INITIALIZE STATE
+# ============================================================
+if 'c_list' not in st.session_state:
+    st.session_state.c_list = [
+        Cargo("10", "Main Machine", 3.50, 1.20, 1.70, 2200, False, 1),
+        Cargo("13", "Transformer Box", 4.90, 1.10, 2.20, 8000, False, 1),
+        Cargo("7", "Control Unit", 3.50, 1.00, 1.20, 2100, True, 2),
+        Cargo("15", "Accessory Kit", 0.90, 0.90, 0.55, 180, True, 4),
+        Cargo("16", "Extra Box", 1.20, 0.80, 0.80, 350, True, 3)
+    ]
 
-    elif eq_type == "ot":
-        if cargo_len > eq["max_len"]: oog_status.append("Uzunluk Kapasitesi Aşıldı")
-        if cargo_width > eq["max_width"]: oog_status.append("Genişlik Kapasitesi Aşıldı")
-        if cargo_height > eq["max_height"]: oog_status.append(f"Üstten Taşma (Over Height - Open Top) (> {eq['max_height']} cm)")
-
-    else:
-        if cargo_len > eq["max_len"]: oog_status.append("Uzunluk Sınırı Aşıldı")
-        if cargo_width > eq["max_width"]: oog_status.append("Genişlik Sınırı Aşıldı")
-        if cargo_height > eq["max_height"]: oog_status.append("Yükseklik Sınırı Aşıldı")
-
+# ============================================================
+# PACKING ENGINE & HELPER FUNCTIONS
+# ============================================================
+def calculate_oog(x, y, z, cl, cw, ch, dl, dw, dh):
     return {
-        "is_oog": len(oog_status) > 0,
-        "warnings": oog_status if oog_status else ["Kargo standart iç ölçülere uygundur (Taşma Yok)."]
+        "front": max(0.0, -x), "rear": max(0.0, (x + cl) - dl),
+        "left": max(0.0, -y), "right": max(0.0, (y + cw) - dw), "top": max(0.0, (z + ch) - dh)
     }
 
-# ==============================================================================
-# ARAYÜZ
-# ==============================================================================
-st.title("📦 Cargo Planner & OOG Kontrol Sistemi")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    selected_eq = st.selectbox(
-        "Ekipman Tipi Seçiniz",
-        options=list(EQUIPMENT_RULES.keys()),
-        format_func=lambda x: EQUIPMENT_RULES[x]["name"]
+def is_overlapping(p1: Placement, p2_bounds):
+    x2, y2, z2, l2, w2, h2 = p2_bounds
+    return not (
+        p1.x + p1.l <= x2 or x2 + l2 <= p1.x or
+        p1.y + p1.w <= y2 or y2 + w2 <= p1.y or
+        p1.z + p1.h <= z2 or z2 + h2 <= p1.z
     )
-    cargo_len = st.number_input("Kargo Uzunluğu (cm)", min_value=1, value=1200)
-    cargo_width = st.number_input("Kargo Genişliği (cm)", min_value=1, value=240)
-    cargo_height = st.number_input("Kargo Yüksekliği (cm)", min_value=1, value=200)
 
-with col2:
-    st.subheader("Hesaplama Sonucu")
-    if st.button("Kargoyu Denetle"):
-        res = check_cargo(selected_eq, cargo_len, cargo_width, cargo_height)
+def check_stacking_validity(candidate_box, placements: List[Placement]):
+    pt_x, pt_y, pt_z, cl, cw, ch = candidate_box
+    if pt_z <= 0.01:
+        return True, 1
+
+    supporting_items = []
+    for p in placements:
+        overlap_x = min(pt_x + cl, p.x + p.l) - max(pt_x, p.x)
+        overlap_y = min(pt_y + cw, p.y + p.w) - max(pt_y, p.y)
+        if overlap_x > 0.05 and overlap_y > 0.05 and abs((p.z + p.h) - pt_z) <= 0.02:
+            supporting_items.append(p)
+
+    if not supporting_items:
+        return False, 0
+
+    max_layer_below = 0
+    for item in supporting_items:
+        if not item.is_stackable or item.stack_layer >= item.max_stack:
+            return False, 0
+        max_layer_below = max(max_layer_below, item.stack_layer)
+
+    return True, max_layer_below + 1
+
+def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: float, allow_rotation=True):
+    placements: List[Placement] = []
+    unplaced = []
+    current_weight = 0.0
+
+    sorted_cargos = sorted(cargos, key=lambda c: (not c.is_stackable, c.weight, c.length * c.width * c.height), reverse=True)
+
+    for cargo in sorted_cargos:
+        if current_weight + cargo.weight > max_w:
+            unplaced.append(cargo)
+            continue
+
+        placed = False
+        orientations = [(cargo.length, cargo.width)]
+        if allow_rotation and cargo.length != cargo.width:
+            orientations.append((cargo.width, cargo.length))
+
+        candidate_points = [(0.0, 0.0, 0.0)]
+        for p in placements:
+            candidate_points.extend([
+                (p.x + p.l, p.y, p.z),
+                (p.x, p.y + p.w, p.z),
+                (p.x, p.y, p.z + p.h),
+            ])
+
+        candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[2], pt[0], pt[1]))
+
+        for pt_x, pt_y, pt_z in candidate_points:
+            for cl, cw in orientations:
+                if pt_y + cw > dw + 0.01 and dw > 0:
+                    continue
+                
+                candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
+                if any(is_overlapping(existing, candidate_box) for existing in placements):
+                    continue
+
+                stack_ok, layer_num = check_stacking_validity(candidate_box, placements)
+                if not stack_ok:
+                    continue
+
+                placements.append(Placement(
+                    cargo.sku, cargo.name, pt_x, pt_y, pt_z, cl, cw, cargo.height, cargo.weight,
+                    cargo.is_stackable, layer_num, cargo.max_stack
+                ))
+                current_weight += cargo.weight
+                placed = True
+                break
+            if placed:
+                break
+
+        if not placed:
+            unplaced.append(cargo)
+
+    return placements, unplaced
+
+def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: float, allow_rotation=True):
+    containers = []
+    remaining_cargos = cargos.copy()
+
+    while len(remaining_cargos) > 0:
+        placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, allow_rotation)
+        if not placements:
+            st.warning(f"⚠️ Dikkat: Bazı kargolar boyut/ağırlık limitleri nedeniyle yüklenemedi: {[c.name for c in unplaced]}")
+            break
+        containers.append(placements)
+        remaining_cargos = unplaced
+
+    return containers
+
+# ============================================================
+# DRAWING & EXPORT ENGINE
+# ============================================================
+def create_2d_figure(placements: List[Placement], dl: float, dw: float, dh: float, max_len_used: float):
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 9))
+    colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
+
+    ax1.set_title("TOP VIEW (Üstten Görünüm)", fontsize=10, fontweight='bold')
+    ax1.add_patch(patches.Rectangle((0, 0), dl, dw, color='#e2e8f0', alpha=0.5))
+    
+    ax2.set_title("SIDE VIEW (Yandan Görünüm)", fontsize=10, fontweight='bold')
+    ax2.add_patch(patches.Rectangle((0, 0), dl, dh, color='#e2e8f0', alpha=0.5))
+    
+    ax3.set_title("FRONT VIEW (Önden Görünüm)", fontsize=10, fontweight='bold')
+    ax3.add_patch(patches.Rectangle((0, 0), dw, dh, color='#e2e8f0', alpha=0.5))
+
+    for idx, p in enumerate(placements):
+        c_color = colors[idx % len(colors)]
+        ax1.add_patch(patches.Rectangle((p.x, p.y), p.l, p.w, edgecolor='black', facecolor=c_color, alpha=0.75, linewidth=1))
+        ax1.text(p.x + p.l/2, p.y + p.w/2, f"{p.sku}\n{p.name}", ha='center', va='center', color='white', fontweight='bold', fontsize=7)
+
+        ax2.add_patch(patches.Rectangle((p.x, p.z), p.l, p.h, edgecolor='black', facecolor=c_color, alpha=0.75, linewidth=1))
+        ax2.text(p.x + p.l/2, p.z + p.h/2, f"{p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=7)
+
+        ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, edgecolor='black', facecolor=c_color, alpha=0.5, linewidth=1))
+        ax3.text(p.y + p.w/2, p.z + p.h/2, f"{p.sku}", ha='center', va='center', color='black', fontweight='bold', fontsize=7)
+
+    max_x_bound = max(dl + 1, max_len_used + 1)
+    ax1.set_xlim(-0.5, max_x_bound); ax1.set_ylim(-0.5, dw + 1); ax1.grid(True, linestyle=':', alpha=0.5)
+    ax2.set_xlim(-0.5, max_x_bound); ax2.set_ylim(-0.5, dh + 1); ax2.grid(True, linestyle=':', alpha=0.5)
+    ax3.set_xlim(-0.5, dw + 1); ax3.set_ylim(-0.5, dh + 1); ax3.grid(True, linestyle=':', alpha=0.5)
+    
+    plt.tight_layout()
+    return fig
+
+def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: float):
+    fig = go.Figure()
+    colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
+
+    fig.add_trace(go.Scatter3d(
+        x=[0, dl, dl, 0, 0, 0, dl, dl, 0, 0, 0, 0, dl, dl, dl, dl],
+        y=[0, 0, dw, dw, 0, 0, 0, dw, dw, 0, dw, dw, dw, 0, 0, dw],
+        z=[0, 0, 0, 0, 0, dh, dh, dh, dh, dh, 0, dh, dh, dh, 0, 0],
+        mode='lines', line=dict(color='#334155', width=5), name='Container Base'
+    ))
+
+    for idx, p in enumerate(placements):
+        c_color = colors[idx % len(colors)]
+        x_pts = [p.x, p.x+p.l, p.x+p.l, p.x, p.x, p.x+p.l, p.x+p.l, p.x]
+        y_pts = [p.y, p.y, p.y+p.w, p.y+p.w, p.y, p.y, p.y+p.w, p.y+p.w]
+        z_pts = [p.z, p.z, p.z, p.z, p.z+p.h, p.z+p.h, p.z+p.h, p.z+p.h]
+
+        fig.add_trace(go.Mesh3d(
+            x=x_pts, y=y_pts, z=z_pts,
+            i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2],
+            j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
+            k=[0, 7, 5, 3, 6, 7, 1, 1, 1, 5, 7, 7],
+            color=c_color, opacity=0.85, name=f"SKU {p.sku}: {p.name}",
+            hoverinfo="text",
+            hovertext=f"<b>{p.name}</b> (SKU: {p.sku})<br>Boyut: {p.l:.2f} x {p.w:.2f} x {p.h:.2f} m<br>Ağırlık: {p.weight} kg"
+        ))
+
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title='Uzunluk / X (m)'),
+            yaxis=dict(title='Genişlik / Y (m)'),
+            zaxis=dict(title='Yükseklik / Z (m)'),
+            aspectmode='data'
+        ),
+        margin=dict(l=0, r=0, b=0, t=10), height=550
+    )
+    return fig
+
+def generate_excel(all_containers_manifest, eq_type):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        summary_rows = []
+        for c_idx, df_manifest in enumerate(all_containers_manifest):
+            summary_rows.append({
+                "Container": f"Konteyner #{c_idx+1}",
+                "Equipment": eq_type,
+                "Total Items": len(df_manifest),
+                "Total Cargo Weight (kg)": df_manifest["Weight (kg)"].sum()
+            })
+            df_manifest.to_excel(writer, sheet_name=f'Container_{c_idx+1}', index=False)
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Summary', index=False)
+    return output.getvalue()
+
+def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    story = []
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, leading=18, textColor=rl_colors.HexColor('#0068C9'))
+    
+    story.append(Paragraph(f"Cargo Planner Pro - Loading Plan (Container #{c_num})", title_style))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(f"<b>Equipment:</b> {eq_type} | <b>Length Utilization:</b> {len_util:.1f}% | <b>Total Weight:</b> {total_w:,.0f} kg", styles['Normal']))
+    story.append(Spacer(1, 8))
+    
+    img_buf = io.BytesIO()
+    fig_2d.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
+    img_buf.seek(0)
+    story.append(Image(img_buf, width=540, height=320))
+    story.append(Spacer(1, 8))
+
+    table_data = [df_report.columns.tolist()] + df_report.values.tolist()
+    t = Table(table_data)
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), rl_colors.HexColor('#0068C9')),
+        ('TEXTCOLOR', (0,0), (-1,0), rl_colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 8),
+        ('BOTTOMPADDING', (0,0), (-1,0), 4),
+        ('BACKGROUND', (0,1), (-1,-1), rl_colors.HexColor('#F8F9FA')),
+        ('GRID', (0,0), (-1,-1), 0.5, rl_colors.grey),
+        ('FONTSIZE', (0,1), (-1,-1), 7),
+    ]))
+    story.append(t)
+    doc.build(story)
+    return buffer.getvalue()
+
+# ============================================================
+# AŞAMA 1: TAM GENİŞLİK KARGO LİSTESİ VE DÜZENLEME
+# ============================================================
+with st.expander("📦 Kargo Listesini Düzenle / Yeni Ekle / Excel Yükle", expanded=True):
+    col_tab, col_add = st.columns([2.5, 1])
+    
+    with col_tab:
+        st.markdown("##### 📝 Canlı Kargo Listesi")
+        st.caption("Tablodaki değerleri doğrudan değiştirebilir, solundaki kutucukla satır seçip **Delete** ile silebilirsiniz.")
         
-        if res["is_oog"]:
-            st.error("⚠️ OOG / TAŞMA TESPİT EDİLDİ")
-            for w in res["warnings"]:
-                st.write(f"- {w}")
-        else:
-            st.success("✅ YÜKLEME UYGUN")
-            st.write(res["warnings"][0])
+        if st.session_state.c_list:
+            df_current = pd.DataFrame([
+                {
+                    "SKU": c.sku,
+                    "Name": c.name,
+                    "Length (cm)": int(c.length * 100),
+                    "Width (cm)": int(c.width * 100),
+                    "Height (cm)": int(c.height * 100),
+                    "Weight (kg)": c.weight,
+                    "Stackable": c.is_stackable,
+                    "Max Stack": c.max_stack
+                } for c in st.session_state.c_list
+            ])
 
-st.divider()
+            edited_df = st.data_editor(
+                df_current,
+                num_rows="dynamic",
+                key="main_cargo_editor",
+                height=230
+            )
 
-# Hapag-Lloyd Bilgilendirme Notları
-with st.expander("📌 Hapag-Lloyd Özel Yükleme ve Lashing Kuralları"):
-    for note in HAPAG_LLOYD_NOTES:
-        st.markdown(f"- {note}")
+            updated_c_list = []
+            for _, row in edited_df.iterrows():
+                if pd.notnull(row['SKU']) and str(row['SKU']).strip() != "":
+                    updated_c_list.append(Cargo(
+                        sku=str(row['SKU']),
+                        name=str(row['Name']),
+                        length=float(row['Length (cm)']) / 100.0,
+                        width=float(row['Width (cm)']) / 100.0,
+                        height=float(row['Height (cm)']) / 100.0,
+                        weight=float(row['Weight (kg)']),
+                        is_stackable=bool(row['Stackable']),
+                        max_stack=int(row['Max Stack'])
+                    ))
+            st.session_state.c_list = updated_c_list
+
+    with col_add:
+        st.markdown("##### ➕ Hızlı Tek Kargo Ekle")
+        with st.form("quick_add_form", clear_on_submit=True):
+            f_sku = st.text_input("SKU / ID", f"{len(st.session_state.c_list) + 10}")
+            f_name = st.text_input("Kargo Adı", f"Cargo-{f_sku}")
+            c1, c2 = st.columns(2)
+            with c1:
+                f_l = st.number_input("Boy (cm)", value=200)
+                f_h = st.number_input("Yük. (cm)", value=150)
+            with c2:
+                f_w = st.number_input("En (cm)", value=100)
+                f_wt = st.number_input("Ağırlık (kg)", value=1000)
+            
+            f_stack = st.checkbox("Üst Üste İstiflenebilir", value=True)
+            
+            if st.form_submit_button("Listeye Ekle"):
+                st.session_state.c_list.append(Cargo(f_sku, f_name, f_l/100.0, f_w/100.0, f_h/100.0, f_wt, f_stack, 5))
+                st.rerun()
+
+        uploaded_file = st.file_uploader("Veya Excel/CSV Dosyası Yükle", type=["xlsx", "csv"])
+        if uploaded_file is not None:
+            try:
+                df_up = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+                st.session_state.c_list = [
+                    Cargo(
+                        str(row['SKU']), str(row['Name']), 
+                        float(row['Length_m']), float(row['Width_m']), float(row['Height_m']), 
+                        float(row['Weight_kg']),
+                        bool(row.get('Is_Stackable', True)),
+                        int(row.get('Max_Stack', 10))
+                    )
+                    for _, row in df_up.iterrows()
+                ]
+                st.success("Excel başarıyla aktarıldı!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Format Hatası: {e}")
+
+# ============================================================
+# AŞAMA 2: YATAY AYARLAR & KONTROL ÇUBUĞU (ÖZEL EKİPMANLAR)
+# ============================================================
+st.markdown("---")
+ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
+
+with ctrl1:
+    eq_type = st.selectbox(
+        "🚛 Ekipman Tipi Seçiniz",
+        [
+            "20ft Flat Rack",
+            "40ft Standard Flat Rack",
+            "40ft High Cube Flat Rack",
+            "20ft Open Top",
+            "40ft Open Top"
+        ]
+    )
+    
+    # Ekipman ölçüleri (m) ve ağırlık limitleri (kg)
+    if eq_type == "20ft Flat Rack":
+        dl, dw, dh, max_w = 5.63, 2.23, 2.20, 31000.0
+    elif eq_type == "40ft Standard Flat Rack":
+        dl, dw, dh, max_w = 11.60, 2.43, 1.92, 40000.0
+    elif eq_type == "40ft High Cube Flat Rack":
+        dl, dw, dh, max_w = 11.60, 2.43, 2.23, 40000.0
+    elif eq_type == "20ft Open Top":
+        dl, dw, dh, max_w = 5.89, 2.34, 2.34, 28000.0
+    elif eq_type == "40ft Open Top":
+        dl, dw, dh, max_w = 12.02, 2.34, 2.34, 30000.0
+
+with ctrl2:
+    allow_rot = st.checkbox("🔄 Kargoları 90° Döndürmeye İzin Ver", value=True)
+    st.caption("En/Boy optimizasyonu için kargolar otomatik çevrilir.")
+
+containers = pack_multi_container(st.session_state.c_list, dl, dw, dh, max_w, allow_rotation=allow_rot)
+
+with ctrl3:
+    st.metric("Gerekli Toplam Konteyner", f"{len(containers)} Adet")
+
+# ============================================================
+# AŞAMA 3: SİMÜLASYON, 3D/2D VE RAPORLAMA EKRANI
+# ============================================================
+if containers:
+    tab_titles = [f"📦 Konteyner #{idx+1}" for idx, c in enumerate(containers)]
+    container_tabs = st.tabs(tab_titles)
+    all_manifests = []
+
+    for idx, placements in enumerate(containers):
+        with container_tabs[idx]:
+            total_w = sum(p.weight for p in placements)
+            max_len_used = max([p.x + p.l for p in placements]) if placements else 0.0
+            len_util = (max_len_used / dl) * 100 if dl > 0 else 0
+            
+            # Üst Özet Kartları
+            m1, m2, m3, m4 = st.columns(4)
+            with m1: st.markdown(f'<div class="metric-card"><div class="metric-title">Uzunluk Doluluğu</div><div class="metric-value">%{len_util:.1f}</div></div>', unsafe_allow_html=True)
+            with m2: st.markdown(f'<div class="metric-card"><div class="metric-title">Toplam Yük Ağırlığı</div><div class="metric-value">{total_w:,.0f} KG</div></div>', unsafe_allow_html=True)
+            with m3: st.markdown(f'<div class="metric-card"><div class="metric-title">Maks. Taşıma Kapasitesi</div><div class="metric-value">{max_w:,.0f} KG</div></div>', unsafe_allow_html=True)
+            with m4:
+                report_data = []
+                for p in placements:
+                    oog = calculate_oog(p.x, p.y, p.z, p.l, p.w, p.h, dl, dw, dh)
+                    is_oog = "Yes" if any(v > 0 for v in oog.values()) else "No"
+                    report_data.append({
+                        "SKU": p.sku, "Name": p.name, "X (m)": round(p.x, 2), "Y (m)": round(p.y, 2), "Z (m)": round(p.z, 2),
+                        "Length (cm)": int(p.l*100), "Width (cm)": int(p.w*100), "Height (cm)": int(p.h*100),
+                        "Weight (kg)": p.weight, "Stackable": "Yes" if p.is_stackable else "No", "Layer": p.stack_layer, "OOG?": is_oog
+                    })
+                df_manifest = pd.DataFrame(report_data)
+                all_manifests.append(df_manifest)
+
+                fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
+                pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w, idx+1)
+                
+                st.download_button(
+                    label=f"📄 Konteyner #{idx+1} PDF Raporu İndir",
+                    data=pdf_data,
+                    file_name=f"container_{idx+1}_manifest.pdf",
+                    mime="application/pdf",
+                    key=f"pdf_btn_{idx}"
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # 3D vs 2D Görselleştirme Tabları
+            v_tab1, v_tab2, v_tab3 = st.tabs(["🧊 İnteraktif 3D Yükleme Modeli", "📐 2D Teknik Çizim Paftası", "📋 Yükleme Manifestosu & Koordinatlar"])
+            
+            with v_tab1:
+                st.plotly_chart(render_3d_plotly(placements, dl, dw, dh), key=f"plotly_main_{idx}")
+            
+            with v_tab2:
+                st.pyplot(fig_2d)
+
+            with v_tab3:
+                st.dataframe(df_manifest)
+
+    # Genel Excel Toplu İndirme
+    st.markdown("---")
+    excel_data = generate_excel(all_manifests, eq_type)
+    st.download_button(
+        label="📊 Tüm Konteynerlerin Detaylı Excel Raporunu İndir (.xlsx)",
+        data=excel_data,
+        file_name="cargo_planner_full_manifest.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
