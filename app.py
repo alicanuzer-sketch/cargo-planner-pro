@@ -131,11 +131,10 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
     unplaced = []
     current_weight = 0.0
 
-    MAX_OOG_WIDTH = 5.00
-    MAX_OOG_HEIGHT = 5.00
-    allowed_max_w = MAX_OOG_WIDTH if is_flat_rack else dw
+    MAX_OOG_WIDTH = 5.00 if is_flat_rack else dw
+    MAX_OOG_HEIGHT = 5.00 if is_flat_rack else dh
 
-    # Büyükten küçüğe hacme ve ağırlığa göre sırala
+    # Kargoları Hacim ve Ağırlığa göre sırala
     sorted_cargos = sorted(cargos, key=lambda c: (c.length * c.width * c.height, c.weight), reverse=True)
 
     for cargo in sorted_cargos:
@@ -145,18 +144,24 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         placed = False
         orientations = []
-        if cargo.length <= dl + 0.0001 and cargo.width <= allowed_max_w + 0.0001:
+        
+        if cargo.length <= dl + 0.0001 and cargo.width <= MAX_OOG_WIDTH + 0.0001:
             orientations.append((cargo.length, cargo.width))
 
         if allow_rotation and cargo.length != cargo.width:
-            if cargo.width <= dl + 0.0001 and cargo.length <= allowed_max_w + 0.0001:
+            if cargo.width <= dl + 0.0001 and cargo.length <= MAX_OOG_WIDTH + 0.0001:
                 orientations.append((cargo.width, cargo.length))
 
         if not orientations:
             unplaced.append(cargo)
             continue
 
-        candidate_points = [(0.0, 0.0, 0.0)]
+        # AĞIRLIK MERKEZİ (CG) HESABI: Ağır parçaları merkeze hizala
+        start_x_offset = 0.0
+        if cargo.weight > (max_w * 0.4) and cargo.length < (dl * 0.9):
+            start_x_offset = max(0.0, (dl - cargo.length) / 2.0)
+
+        candidate_points = [(start_x_offset, 0.0, 0.0), (0.0, 0.0, 0.0)]
         for p in placements:
             candidate_points.extend([
                 (p.x + p.l, p.y, p.z),
@@ -168,12 +173,12 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                # KATI UZUNLUK SINIRI: Konteyner boyunu (dl = 11.60m) AŞAMAZ!
+                # KATI UZUNLUK KONTROLÜ (Uzunluk kesinlikle geçilemez)
                 if round(pt_x + cl, 4) > round(dl, 4):
                     continue
 
-                # KATI GENİŞLİK SINIRI
-                if round(pt_y + cw, 4) > round(allowed_max_w, 4):
+                # KATI GENİŞLİK KONTROLÜ (OOG Dahil Max Genişlik)
+                if round(pt_y + cw, 4) > round(MAX_OOG_WIDTH, 4):
                     continue
 
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
