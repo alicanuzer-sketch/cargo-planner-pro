@@ -50,14 +50,15 @@ class Placement:
 # ============================================================
 if 'c_list' not in st.session_state:
     st.session_state.c_list = [
-        Cargo("10", "Main Machine", 3.50, 3.50, 1.70, 2200),
-        Cargo("13", "Transformer Box", 4.90, 3.10, 2.20, 8000),
-        Cargo("7", "Control Unit", 3.50, 1.30, 1.20, 2100),
-        Cargo("15", "Accessory Kit", 0.90, 0.90, 0.55, 180)
+        Cargo("10", "Main Machine", 3.50, 1.20, 1.70, 2200),
+        Cargo("13", "Transformer Box", 4.90, 1.10, 2.20, 8000),
+        Cargo("7", "Control Unit", 3.50, 1.00, 1.20, 2100),
+        Cargo("15", "Accessory Kit", 0.90, 0.90, 0.55, 180),
+        Cargo("16", "Extra Box", 1.20, 0.80, 0.80, 350)
     ]
 
 # ============================================================
-# PACKING ENGINE
+# ADVANCED 3D BIN PACKING ENGINE (Yan Yana & Üst Üste Dizilim)
 # ============================================================
 def calculate_oog(x, y, z, cl, cw, ch, dl, dw, dh):
     return {
@@ -65,23 +66,62 @@ def calculate_oog(x, y, z, cl, cw, ch, dl, dw, dh):
         "left": max(0.0, -y), "right": max(0.0, (y + cw) - dw), "top": max(0.0, (z + ch) - dh)
     }
 
-def pack_cargo(cargos: List[Cargo], dl: float, dw: float, dh: float):
+def is_overlapping(p1: Placement, p2_bounds):
+    x2, y2, z2, l2, w2, h2 = p2_bounds
+    return not (
+        p1.x + p1.l <= x2 or x2 + l2 <= p1.x or
+        p1.y + p1.w <= y2 or y2 + w2 <= p1.y or
+        p1.z + p1.h <= z2 or z2 + h2 <= p1.z
+    )
+
+def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, allow_rotation=True):
     placements: List[Placement] = []
     unplaced = []
-    
+
+    # Hacme göre büyükten küçüğe sırala
     sorted_cargos = sorted(cargos, key=lambda c: (c.length * c.width * c.height), reverse=True)
-    current_x = 0.0
 
     for cargo in sorted_cargos:
-        cy = (dw - cargo.width) / 2
-        cx = current_x
-        cz = 0.0
-        
-        placements.append(Placement(
-            cargo.sku, cargo.name, cx, cy, cz, cargo.length, cargo.width, cargo.height, cargo.weight
-        ))
-        
-        current_x += cargo.length
+        placed = False
+        # Olası döndürme durumları (Normal veya 90 derece yatay döndürülmüş)
+        orientations = [(cargo.length, cargo.width)]
+        if allow_rotation and cargo.length != cargo.width:
+            orientations.append((cargo.width, cargo.length))
+
+        # Arama Noktaları (Extreme Points)
+        candidate_points = [(0.0, 0.0, 0.0)]
+        for p in placements:
+            candidate_points.extend([
+                (p.x + p.l, p.y, p.z),       # X ekseni boyunca ilerisi
+                (p.x, p.y + p.w, p.z),       # Y ekseni boyunca yan tarafı
+                (p.x, p.y, p.z + p.h),       # Z ekseni boyunca üstü
+            ])
+
+        # Noktaları Z, X, Y sırasına göre sırala (Önce tabana ve en geriye yerleştir)
+        candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[2], pt[0], pt[1]))
+
+        for pt_x, pt_y, pt_z in candidate_points:
+            for cl, cw in orientations:
+                # Sınır kontrolü (Taban genişliğini aşmasın)
+                if pt_y + cw > dw + 0.01 and dw > 0:
+                    continue
+                
+                # Çakışma kontrolü
+                candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
+                if any(is_overlapping(existing, candidate_box) for existing in placements):
+                    continue
+
+                # Uygun yer bulundu
+                placements.append(Placement(
+                    cargo.sku, cargo.name, pt_x, pt_y, pt_z, cl, cw, cargo.height, cargo.weight
+                ))
+                placed = True
+                break
+            if placed:
+                break
+
+        if not placed:
+            unplaced.append(cargo)
 
     return placements, unplaced
 
@@ -90,7 +130,7 @@ def pack_cargo(cargos: List[Cargo], dl: float, dw: float, dh: float):
 # ============================================================
 def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: float):
     fig = go.Figure()
-    colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF']
+    colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
 
     # 1. Ekipman Taban/Çerçeve Çizgileri
     fig.add_trace(go.Scatter3d(
@@ -117,12 +157,13 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
             j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
             k=[0, 7, 5, 3, 6, 7, 1, 1, 1, 5, 7, 7],
             color=c_color,
-            opacity=0.75,
+            opacity=0.8,
             name=f"SKU {p.sku}: {p.name}",
             hoverinfo="text",
             hovertext=(
                 f"<b>{p.name}</b><br>"
                 f"SKU: {p.sku}<br>"
+                f"Konum (X,Y,Z): ({p.x:.2f}, {p.y:.2f}, {p.z:.2f}) m<br>"
                 f"Boyut (BxGxY): {p.l:.2f} x {p.w:.2f} x {p.h:.2f} m<br>"
                 f"Ağırlık: {p.weight:,.0f} kg"
             )
@@ -156,6 +197,8 @@ with col_sidebar:
     else:
         dl, dw, dh, max_w = 12.02, 2.35, 2.38, 28000.0
 
+    allow_rot = st.checkbox("Kargo Döndürmeye İzin Ver (90° Rotation)", value=True)
+
     st.subheader("📁 Toplu Yükleme (Excel/CSV)")
     uploaded_file = st.file_uploader("Kargo Listesi Yükle", type=["xlsx", "csv"])
     if uploaded_file is not None:
@@ -174,8 +217,8 @@ with col_sidebar:
         sku = st.text_input("SKU / ID", f"{len(st.session_state.c_list) + 10}")
         name = st.text_input("Cargo Name", f"Item-{sku}")
         c_l = st.number_input("Length (cm)", value=200) / 100.0
-        c_w = st.number_input("Width (cm)", value=200) / 100.0
-        c_h = st.number_input("Height (cm)", value=200) / 100.0
+        c_w = st.number_input("Width (cm)", value=100) / 100.0
+        c_h = st.number_input("Height (cm)", value=150) / 100.0
         c_wt = st.number_input("Weight (kg)", value=1000)
         
         if st.form_submit_button("Add to Load List"):
@@ -190,7 +233,7 @@ with col_sidebar:
 # RESULTS & DRAWINGS
 # ============================================================
 with col_main:
-    placements, unplaced = pack_cargo(st.session_state.c_list, dl, dw, dh)
+    placements, unplaced = pack_cargo_3d(st.session_state.c_list, dl, dw, dh, allow_rotation=allow_rot)
     
     # Bilgi Kartları
     c1, c2, c3, c4 = st.columns(4)
@@ -211,7 +254,7 @@ with col_main:
 
         with tab_2d:
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12))
-            colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF']
+            colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
 
             ax1.set_title("TOP VIEW (Üstten Görünüm - Genişlik Taşması / Overwidth)", fontsize=11, fontweight='bold')
             ax1.add_patch(patches.Rectangle((0, 0), dl, dw, color='lightgray', alpha=0.4))
@@ -256,8 +299,9 @@ with col_main:
             oog = calculate_oog(p.x, p.y, p.z, p.l, p.w, p.h, dl, dw, dh)
             is_oog = "Yes" if any(v > 0 for v in oog.values()) else "No"
             report_data.append({
-                "SKU": p.sku, "Name": p.name, "Length (cm)": int(p.l*100), "Width (cm)": int(p.w*100), "Height (cm)": int(p.h*100),
-                "Weight (kg)": p.weight, "OOG?": is_oog, "Left OOG (cm)": int(oog['left']*100), "Right OOG (cm)": int(oog['right']*100), "Top OOG (cm)": int(oog['top']*100)
+                "SKU": p.sku, "Name": p.name, "X (m)": round(p.x, 2), "Y (m)": round(p.y, 2), "Z (m)": round(p.z, 2),
+                "Length (cm)": int(p.l*100), "Width (cm)": int(p.w*100), "Height (cm)": int(p.h*100),
+                "Weight (kg)": p.weight, "OOG?": is_oog
             })
 
         st.subheader("📋 Load Manifest & OOG Specification")
