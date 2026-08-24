@@ -20,10 +20,7 @@ st.set_page_config(page_title="Cargo Planner Pro", page_icon="📦", layout="wid
 
 st.markdown("""
     <style>
-    /* Genel Arayüz Yumuşatma */
     .main { background-color: #f8f9fa; }
-    
-    /* Metrik Kart Tasarımları */
     .metric-card {
         background-color: #ffffff;
         padding: 18px;
@@ -34,8 +31,6 @@ st.markdown("""
     }
     .metric-title { font-size: 12px; color: #6c757d; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
     .metric-value { font-size: 22px; color: #1e293b; font-weight: 800; margin-top: 4px; }
-    
-    /* İndirme Buton Konteynerı */
     .stDownloadButton > button {
         width: 100%;
         border-radius: 8px;
@@ -402,7 +397,7 @@ with st.expander("📦 Kargo Listesini Düzenle / Yeni Ekle / Excel Yükle", exp
                 st.error(f"Format Hatası: {e}")
 
 # ============================================================
-# AŞAMA 2: YATAY AYARLAR & KONTROL ÇUBUĞU (ÖZEL EKİPMANLAR)
+# AŞAMA 2: YATAY AYARLAR & KONTROL ÇUBUĞU (GÜNCELLENMİŞ ÖZEL EKİPMANLAR)
 # ============================================================
 st.markdown("---")
 ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 2])
@@ -414,22 +409,25 @@ with ctrl1:
             "20ft Flat Rack",
             "40ft Standard Flat Rack",
             "40ft High Cube Flat Rack",
-            "20ft Open Top",
-            "40ft Open Top"
+            "20ft Standard Open Top",
+            "40ft Standard Open Top",
+            "40ft High Cube Open Top"
         ]
     )
     
-    # Ekipman ölçüleri (m) ve ağırlık limitleri (kg)
+    # Mutabık kalınan güncel ölçüler (m) ve ağırlık limitleri (kg)
     if eq_type == "20ft Flat Rack":
-        dl, dw, dh, max_w = 5.63, 2.23, 2.20, 31000.0
+        dl, dw, dh, max_w = 5.50, 2.43, 2.20, 42000.0
     elif eq_type == "40ft Standard Flat Rack":
         dl, dw, dh, max_w = 11.60, 2.43, 1.92, 40000.0
     elif eq_type == "40ft High Cube Flat Rack":
-        dl, dw, dh, max_w = 11.60, 2.43, 2.23, 40000.0
-    elif eq_type == "20ft Open Top":
-        dl, dw, dh, max_w = 5.89, 2.34, 2.34, 28000.0
-    elif eq_type == "40ft Open Top":
-        dl, dw, dh, max_w = 12.02, 2.34, 2.34, 30000.0
+        dl, dw, dh, max_w = 11.60, 2.43, 2.25, 40000.0
+    elif eq_type == "20ft Standard Open Top":
+        dl, dw, dh, max_w = 5.33, 2.23, 2.34, 30000.0
+    elif eq_type == "40ft Standard Open Top":
+        dl, dw, dh, max_w = 11.55, 2.23, 2.34, 28000.0
+    elif eq_type == "40ft High Cube Open Top":
+        dl, dw, dh, max_w = 11.55, 2.19, 2.65, 28000.0
 
 with ctrl2:
     allow_rot = st.checkbox("🔄 Kargoları 90° Döndürmeye İzin Ver", value=True)
