@@ -9,7 +9,7 @@ import io
 
 # ReportLab kütüphaneleri (PDF üretimi için)
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors as rl_colors
 
@@ -126,6 +126,46 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, allow_ro
     return placements, unplaced
 
 # ============================================================
+# MATPLOTLIB FIGURE GENERATOR
+# ============================================================
+def create_2d_figure(placements: List[Placement], dl: float, dw: float, dh: float, max_len_used: float):
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10))
+    colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
+
+    ax1.set_title("TOP VIEW (Üstten Görünüm)", fontsize=10, fontweight='bold')
+    ax1.add_patch(patches.Rectangle((0, 0), dl, dw, color='lightgray', alpha=0.4))
+    
+    ax2.set_title("SIDE VIEW (Yandan Görünüm)", fontsize=10, fontweight='bold')
+    ax2.add_patch(patches.Rectangle((0, 0), dl, dh, color='lightgray', alpha=0.4))
+    
+    ax3.set_title("FRONT VIEW (Önden Görünüm)", fontsize=10, fontweight='bold')
+    ax3.add_patch(patches.Rectangle((0, 0), dw, dh, color='lightgray', alpha=0.4))
+
+    for idx, p in enumerate(placements):
+        c_color = colors[idx % len(colors)]
+        ax1.add_patch(patches.Rectangle((p.x, p.y), p.l, p.w, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.2))
+        ax1.text(p.x + p.l/2, p.y + p.w/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=8)
+
+        ax2.add_patch(patches.Rectangle((p.x, p.z), p.l, p.h, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.2))
+        ax2.text(p.x + p.l/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=8)
+
+        ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, edgecolor='black', facecolor='none', linestyle='--', linewidth=1.2))
+        ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, facecolor=c_color, alpha=0.4))
+        ax3.text(p.y + p.w/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='black', fontweight='bold', fontsize=8)
+
+    max_x_bound = max(dl + 2, max_len_used + 2)
+    max_y_bound = max([dw + 2] + [p.y + p.w + 1 for p in placements])
+    min_y_bound = min([-1.0] + [p.y - 1 for p in placements])
+    max_z_bound = max([dh + 2] + [p.z + p.h + 1 for p in placements])
+
+    ax1.set_xlim(-1, max_x_bound); ax1.set_ylim(min_y_bound, max_y_bound); ax1.grid(True, linestyle='--', alpha=0.4)
+    ax2.set_xlim(-1, max_x_bound); ax2.set_ylim(-0.5, max_z_bound); ax2.grid(True, linestyle='--', alpha=0.4)
+    ax3.set_xlim(min_y_bound, max_y_bound); ax3.set_ylim(-0.5, max_z_bound); ax3.grid(True, linestyle='--', alpha=0.4)
+    
+    plt.tight_layout()
+    return fig
+
+# ============================================================
 # REPORT GENERATION FUNCTIONS (PDF & EXCEL)
 # ============================================================
 def generate_excel(df_report, eq_type, len_util, total_w):
@@ -140,22 +180,29 @@ def generate_excel(df_report, eq_type, len_util, total_w):
         df_report.to_excel(writer, sheet_name='Load Manifest', index=False)
     return output.getvalue()
 
-def generate_pdf(df_report, eq_type, len_util, total_w):
+def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
     story = []
     
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=18, leading=22, textColor=rl_colors.HexColor('#0068C9'))
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=rl_colors.HexColor('#0068C9'))
     
     story.append(Paragraph("Project Logistics Loading Report", title_style))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 8))
     
     # Özet Bilgiler
     summary_text = f"<b>Equipment:</b> {eq_type} | <b>Length Utilization:</b> {len_util:.1f}% | <b>Total Weight:</b> {total_w:,.0f} kg"
     story.append(Paragraph(summary_text, styles['Normal']))
-    story.append(Spacer(1, 15))
+    story.append(Spacer(1, 10))
     
+    # 2D Görseli RAM üzerinde resme dönüştürüp PDF'e ekleme
+    img_buf = io.BytesIO()
+    fig_2d.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
+    img_buf.seek(0)
+    story.append(Image(img_buf, width=540, height=360))
+    story.append(Spacer(1, 10))
+
     # Manifest Tablosu
     table_data = [df_report.columns.tolist()] + df_report.values.tolist()
     t = Table(table_data)
@@ -164,11 +211,11 @@ def generate_pdf(df_report, eq_type, len_util, total_w):
         ('TEXTCOLOR', (0,0), (-1,0), rl_colors.whitesmoke),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,0), 9),
-        ('BOTTOMPADDING', (0,0), (-1,0), 6),
+        ('FONTSIZE', (0,0), (-1,0), 8),
+        ('BOTTOMPADDING', (0,0), (-1,0), 4),
         ('BACKGROUND', (0,1), (-1,-1), rl_colors.HexColor('#F8F9FA')),
         ('GRID', (0,0), (-1,-1), 0.5, rl_colors.grey),
-        ('FONTSIZE', (0,1), (-1,-1), 8),
+        ('FONTSIZE', (0,1), (-1,-1), 7),
     ]))
     story.append(t)
     
@@ -286,47 +333,15 @@ with col_main:
     with c4: st.markdown(f'<div class="metric-card"><div class="metric-title">MAX PAYLOAD</div><div class="metric-value">{max_w:,.0f} KG</div></div>', unsafe_allow_html=True)
 
     if len(placements) > 0:
+        fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
+
         tab_3d, tab_2d = st.tabs(["🧊 İnteraktif 3D Görünüm (Plotly)", "📐 2D Teknik Paftalar (Matplotlib)"])
         
         with tab_3d:
             st.plotly_chart(render_3d_plotly(placements, dl, dw, dh), width='stretch')
 
         with tab_2d:
-            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12))
-            colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
-
-            ax1.set_title("TOP VIEW (Üstten Görünüm)", fontsize=11, fontweight='bold')
-            ax1.add_patch(patches.Rectangle((0, 0), dl, dw, color='lightgray', alpha=0.4))
-            
-            ax2.set_title("SIDE VIEW (Yandan Görünüm)", fontsize=11, fontweight='bold')
-            ax2.add_patch(patches.Rectangle((0, 0), dl, dh, color='lightgray', alpha=0.4))
-            
-            ax3.set_title("FRONT VIEW (Önden Görünüm)", fontsize=11, fontweight='bold')
-            ax3.add_patch(patches.Rectangle((0, 0), dw, dh, color='lightgray', alpha=0.4))
-
-            for idx, p in enumerate(placements):
-                c_color = colors[idx % len(colors)]
-                ax1.add_patch(patches.Rectangle((p.x, p.y), p.l, p.w, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.5))
-                ax1.text(p.x + p.l/2, p.y + p.w/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=9)
-
-                ax2.add_patch(patches.Rectangle((p.x, p.z), p.l, p.h, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.5))
-                ax2.text(p.x + p.l/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=9)
-
-                ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, edgecolor='black', facecolor='none', linestyle='--', linewidth=1.5))
-                ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, facecolor=c_color, alpha=0.4))
-                ax3.text(p.y + p.w/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='black', fontweight='bold', fontsize=9)
-
-            max_x_bound = max(dl + 2, max_len_used + 2)
-            max_y_bound = max([dw + 2] + [p.y + p.w + 1 for p in placements])
-            min_y_bound = min([-1.0] + [p.y - 1 for p in placements])
-            max_z_bound = max([dh + 2] + [p.z + p.h + 1 for p in placements])
-
-            ax1.set_xlim(-1, max_x_bound); ax1.set_ylim(min_y_bound, max_y_bound); ax1.grid(True, linestyle='--', alpha=0.4)
-            ax2.set_xlim(-1, max_x_bound); ax2.set_ylim(-0.5, max_z_bound); ax2.grid(True, linestyle='--', alpha=0.4)
-            ax3.set_xlim(min_y_bound, max_y_bound); ax3.set_ylim(-0.5, max_z_bound); ax3.grid(True, linestyle='--', alpha=0.4)
-            
-            plt.tight_layout()
-            st.pyplot(fig)
+            st.pyplot(fig_2d)
 
         # Manifest Tablosu
         report_data = []
@@ -348,7 +363,7 @@ with col_main:
         col_dl1, col_dl2 = st.columns(2)
 
         excel_data = generate_excel(df_manifest, eq_type, len_util, total_w)
-        pdf_data = generate_pdf(df_manifest, eq_type, len_util, total_w)
+        pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w)
 
         with col_dl1:
             st.download_button(
