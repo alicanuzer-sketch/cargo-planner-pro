@@ -44,7 +44,7 @@ class Cargo:
     height: float
     weight: float
     is_stackable: bool = True
-    max_stack: int = 10  # Maksimum üst üste kat sayısı
+    max_stack: int = 10
 
 @dataclass
 class Placement:
@@ -54,7 +54,7 @@ class Placement:
     l: float; w: float; h: float
     weight: float
     is_stackable: bool
-    stack_layer: int  # Hangi kat seviyesinde durduğu
+    stack_layer: int
     max_stack: int
 
 # ============================================================
@@ -87,10 +87,7 @@ def is_overlapping(p1: Placement, p2_bounds):
     )
 
 def check_stacking_validity(candidate_box, placements: List[Placement]):
-    """İstifleme limitlerini ve üst üste koyma iznini denetler."""
     pt_x, pt_y, pt_z, cl, cw, ch = candidate_box
-    
-    # Doğrudan zemine koyuluyorsa kat 1'dir
     if pt_z <= 0.01:
         return True, 1
 
@@ -98,8 +95,6 @@ def check_stacking_validity(candidate_box, placements: List[Placement]):
     for p in placements:
         overlap_x = min(pt_x + cl, p.x + p.l) - max(pt_x, p.x)
         overlap_y = min(pt_y + cw, p.y + p.w) - max(pt_y, p.y)
-        
-        # Tam alt yüzeyinde duruyor mu?
         if overlap_x > 0.05 and overlap_y > 0.05 and abs((p.z + p.h) - pt_z) <= 0.02:
             supporting_items.append(p)
 
@@ -121,7 +116,6 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
     unplaced = []
     current_weight = 0.0
 
-    # İstiflenemeyen ve ağır malzemelere öncelik ver
     sorted_cargos = sorted(cargos, key=lambda c: (not c.is_stackable, c.weight, c.length * c.width * c.height), reverse=True)
 
     for cargo in sorted_cargos:
@@ -179,18 +173,16 @@ def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, m
 
     while len(remaining_cargos) > 0:
         placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, allow_rotation)
-        
         if not placements:
-            st.error(f"⚠️ Şunlar hiçbir şekilde konteynere sığmıyor: {[c.name for c in unplaced]}")
+            st.error(f"⚠️ Şunlar sığmıyor: {[c.name for c in unplaced]}")
             break
-            
         containers.append(placements)
         remaining_cargos = unplaced
 
     return containers
 
 # ============================================================
-# MATPLOTLIB FIGURE GENERATOR
+# MATPLOTLIB & REPORT
 # ============================================================
 def create_2d_figure(placements: List[Placement], dl: float, dw: float, dh: float, max_len_used: float):
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10))
@@ -229,23 +221,18 @@ def create_2d_figure(placements: List[Placement], dl: float, dw: float, dh: floa
     plt.tight_layout()
     return fig
 
-# ============================================================
-# REPORT GENERATION FUNCTIONS (PDF & EXCEL)
-# ============================================================
 def generate_excel(all_containers_manifest, eq_type):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         summary_rows = []
         for c_idx, df_manifest in enumerate(all_containers_manifest):
-            total_w = df_manifest["Weight (kg)"].sum()
             summary_rows.append({
                 "Container": f"Konteyner #{c_idx+1}",
                 "Equipment": eq_type,
                 "Total Items": len(df_manifest),
-                "Total Cargo Weight (kg)": total_w
+                "Total Cargo Weight (kg)": df_manifest["Weight (kg)"].sum()
             })
             df_manifest.to_excel(writer, sheet_name=f'Container_{c_idx+1}', index=False)
-            
         pd.DataFrame(summary_rows).to_excel(writer, sheet_name='Summary', index=False)
     return output.getvalue()
 
@@ -253,15 +240,12 @@ def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
     story = []
-    
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=rl_colors.HexColor('#0068C9'))
     
     story.append(Paragraph(f"Project Logistics Loading Report - Container #{c_num}", title_style))
     story.append(Spacer(1, 8))
-    
-    summary_text = f"<b>Equipment:</b> {eq_type} | <b>Length Utilization:</b> {len_util:.1f}% | <b>Total Weight:</b> {total_w:,.0f} kg"
-    story.append(Paragraph(summary_text, styles['Normal']))
+    story.append(Paragraph(f"<b>Equipment:</b> {eq_type} | <b>Length Utilization:</b> {len_util:.1f}% | <b>Total Weight:</b> {total_w:,.0f} kg", styles['Normal']))
     story.append(Spacer(1, 10))
     
     img_buf = io.BytesIO()
@@ -284,13 +268,9 @@ def generate_pdf(df_report, fig_2d, eq_type, len_util, total_w, c_num):
         ('FONTSIZE', (0,1), (-1,-1), 7),
     ]))
     story.append(t)
-    
     doc.build(story)
     return buffer.getvalue()
 
-# ============================================================
-# PLOTLY 3D RENDER ENGINE
-# ============================================================
 def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: float):
     fig = go.Figure()
     colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
@@ -315,14 +295,7 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
             k=[0, 7, 5, 3, 6, 7, 1, 1, 1, 5, 7, 7],
             color=c_color, opacity=0.8, name=f"SKU {p.sku}: {p.name}",
             hoverinfo="text",
-            hovertext=(
-                f"<b>{p.name}</b><br>SKU: {p.sku}<br>"
-                f"Konum (X,Y,Z): ({p.x:.2f}, {p.y:.2f}, {p.z:.2f}) m<br>"
-                f"Boyut (BxGxY): {p.l:.2f} x {p.w:.2f} x {p.h:.2f} m<br>"
-                f"Ağırlık: {p.weight:,.0f} kg<br>"
-                f"İstiflenebilir: {'Evet' if p.is_stackable else 'Hayır'}<br>"
-                f"Kat Seviyesi: {p.stack_layer}"
-            )
+            hovertext=f"<b>{p.name}</b><br>SKU: {p.sku}<br>Boyut: {p.l:.2f}x{p.w:.2f}x{p.h:.2f} m<br>Ağırlık: {p.weight} kg"
         ))
 
     fig.update_layout(
@@ -332,18 +305,18 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
             zaxis=dict(title='Yükseklik / Z (m)', backgroundcolor="rgb(240, 240, 240)"),
             aspectmode='data'
         ),
-        margin=dict(l=0, r=0, b=0, t=30), height=550
+        margin=dict(l=0, r=0, b=0, t=30), height=500
     )
     return fig
 
 # ============================================================
-# STREAMLIT UI LAYOUT
+# MAIN PAGE LAYOUT (SOL/SAĞ EKRAN DÜZENİ)
 # ============================================================
-col_sidebar, col_main = st.columns([1, 3])
+col_left, col_right = st.columns([1.2, 1.8])
 
-with col_sidebar:
-    st.header("📋 Settings")
-    eq_type = st.selectbox("Equipment Type", ["40ft Flat Rack", "20ft Flat Rack", "40ft Open Top"])
+with col_left:
+    st.subheader("⚙️ Ekipman ve Genel Ayarlar")
+    eq_type = st.selectbox("Ekipman Tipi", ["40ft Flat Rack", "20ft Flat Rack", "40ft Open Top"])
     
     if eq_type == "40ft Flat Rack":
         dl, dw, dh, max_w = 12.04, 2.43, 2.23, 40000.0
@@ -354,9 +327,9 @@ with col_sidebar:
 
     allow_rot = st.checkbox("Kargo Döndürmeye İzin Ver (90° Rotation)", value=True)
 
-    st.subheader("📦 Yük Listesi & Düzenleme")
-    
-    # Live Interactive Table
+    st.subheader("✏️ Canlı Kargo Listesi & Silme Paneli")
+    st.caption("Aşağıdaki canlı tabloda istediğiniz hücreyi değiştirebilir, satırın en solundaki kutucuğu seçip klavyeden **Delete** ile silebilirsiniz.")
+
     if st.session_state.c_list:
         df_current = pd.DataFrame([
             {
@@ -374,7 +347,7 @@ with col_sidebar:
         edited_df = st.data_editor(
             df_current,
             num_rows="dynamic",
-            key="cargo_editor",
+            key="main_cargo_editor",
             use_container_width=True
         )
 
@@ -392,64 +365,50 @@ with col_sidebar:
                     max_stack=int(row['Max Stack'])
                 ))
         st.session_state.c_list = updated_c_list
-    else:
-        st.info("Liste boş. Aşağıdan kargo ekleyin.")
 
-    st.subheader("📁 Toplu Yükleme (Excel/CSV)")
-    uploaded_file = st.file_uploader("Kargo Listesi Yükle", type=["xlsx", "csv"])
-    if uploaded_file is not None:
-        try:
-            df_up = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
-            st.session_state.c_list = [
-                Cargo(
-                    str(row['SKU']), str(row['Name']), 
-                    float(row['Length_m']), float(row['Width_m']), float(row['Height_m']), 
-                    float(row['Weight_kg']),
-                    bool(row.get('Is_Stackable', True)),
-                    int(row.get('Max_Stack', 10))
-                )
-                for _, row in df_up.iterrows()
-            ]
-            st.success(f"✅ {len(df_up)} kargo eklendi!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Hata: {e}")
+    with st.expander("➕ Manuel Yeni Kargo Ekle / Dosya Yükle"):
+        with st.form("cargo_form", clear_on_submit=True):
+            sku = st.text_input("SKU / ID", f"{len(st.session_state.c_list) + 10}")
+            name = st.text_input("Cargo Name", f"Item-{sku}")
+            c_l = st.number_input("Length (cm)", value=200)
+            c_w = st.number_input("Width (cm)", value=100)
+            c_h = st.number_input("Height (cm)", value=150)
+            c_wt = st.number_input("Weight (kg)", value=1000)
+            c_stackable = st.checkbox("Üst Üste Konulabilir (Stackable)", value=True)
+            c_max_stack = st.number_input("Maksimum Kat Sayısı", min_value=1, max_value=10, value=5)
+            
+            if st.form_submit_button("Listeye Ekle"):
+                st.session_state.c_list.append(Cargo(sku, name, c_l/100.0, c_w/100.0, c_h/100.0, c_wt, c_stackable, c_max_stack))
+                st.rerun()
 
-    st.subheader("➕ Manuel Ekle")
-    with st.form("cargo_form", clear_on_submit=True):
-        sku = st.text_input("SKU / ID", f"{len(st.session_state.c_list) + 10}")
-        name = st.text_input("Cargo Name", f"Item-{sku}")
-        c_l = st.number_input("Length (cm)", value=200)
-        c_w = st.number_input("Width (cm)", value=100)
-        c_h = st.number_input("Height (cm)", value=150)
-        c_wt = st.number_input("Weight (kg)", value=1000)
-        
-        c_stackable = st.checkbox("Üst Üste Konulabilir (Stackable)", value=True)
-        c_max_stack = st.number_input("Maksimum Kat Sayısı", min_value=1, max_value=10, value=5)
-        
-        if st.form_submit_button("Add to Load List"):
-            st.session_state.c_list.append(Cargo(sku, name, c_l/100.0, c_w/100.0, c_h/100.0, c_wt, c_stackable, c_max_stack))
-            st.rerun()
+        uploaded_file = st.file_uploader("Excel/CSV Yükle", type=["xlsx", "csv"])
+        if uploaded_file is not None:
+            try:
+                df_up = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+                st.session_state.c_list = [
+                    Cargo(
+                        str(row['SKU']), str(row['Name']), 
+                        float(row['Length_m']), float(row['Width_m']), float(row['Height_m']), 
+                        float(row['Weight_kg']),
+                        bool(row.get('Is_Stackable', True)),
+                        int(row.get('Max_Stack', 10))
+                    )
+                    for _, row in df_up.iterrows()
+                ]
+                st.success("Excel yüklendi!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Hata: {e}")
 
-    if st.button("🗑️ Tüm Listeyi Temizle", type="secondary"):
-        st.session_state.c_list = []
-        st.rerun()
-
-# ============================================================
-# RESULTS & DRAWINGS
-# ============================================================
-with col_main:
+with col_right:
     containers = pack_multi_container(st.session_state.c_list, dl, dw, dh, max_w, allow_rotation=allow_rot)
     
     total_containers_needed = len(containers)
-    total_items_placed = sum(len(c) for c in containers)
-    
-    st.markdown(f"### 🚛 Toplam İhtiyaç Duyulan Konteyner: **{total_containers_needed} Adet** ({eq_type})")
+    st.markdown(f"### 🚛 Toplam İhtiyaç Duyulan Konteyner: **{total_containers_needed} Adet**")
     
     if total_containers_needed > 0:
-        tab_titles = [f"📦 Konteyner #{idx+1} ({len(c)} Parça)" for idx, c in enumerate(containers)]
+        tab_titles = [f"📦 Konteyner #{idx+1}" for idx, c in enumerate(containers)]
         container_tabs = st.tabs(tab_titles)
-        
         all_manifests = []
 
         for idx, placements in enumerate(containers):
@@ -458,23 +417,19 @@ with col_main:
                 max_len_used = max([p.x + p.l for p in placements]) if placements else 0.0
                 len_util = (max_len_used / dl) * 100 if dl > 0 else 0
                 
-                c1, c2, c3, c4 = st.columns(4)
-                with c1: st.markdown(f'<div class="metric-card"><div class="metric-title">EQUIPMENT TYPE</div><div class="metric-value">{eq_type}</div></div>', unsafe_allow_html=True)
-                with c2: st.markdown(f'<div class="metric-card"><div class="metric-title">LENGTH UTILIZATION</div><div class="metric-value">{len_util:.1f}% ({max_len_used:.2f} m)</div></div>', unsafe_allow_html=True)
-                with c3: st.markdown(f'<div class="metric-card"><div class="metric-title">NET CARGO WEIGHT</div><div class="metric-value">{total_w:,.0f} KG</div></div>', unsafe_allow_html=True)
-                with c4: st.markdown(f'<div class="metric-card"><div class="metric-title">MAX PAYLOAD</div><div class="metric-value">{max_w:,.0f} KG</div></div>', unsafe_allow_html=True)
+                c1, c2, c3 = st.columns(3)
+                with c1: st.markdown(f'<div class="metric-card"><div class="metric-title">DOLULUK</div><div class="metric-value">%{len_util:.1f}</div></div>', unsafe_allow_html=True)
+                with c2: st.markdown(f'<div class="metric-card"><div class="metric-title">TOPLAM AĞIRLIK</div><div class="metric-value">{total_w:,.0f} KG</div></div>', unsafe_allow_html=True)
+                with c3: st.markdown(f'<div class="metric-card"><div class="metric-title">KAPASİTE</div><div class="metric-value">{max_w:,.0f} KG</div></div>', unsafe_allow_html=True)
 
                 fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
 
-                tab_3d, tab_2d = st.tabs(["🧊 İnteraktif 3D Görünüm (Plotly)", "📐 2D Teknik Paftalar (Matplotlib)"])
-                
+                tab_3d, tab_2d = st.tabs(["🧊 3D Görünüm", "📐 2D Pafta"])
                 with tab_3d:
-                    st.plotly_chart(render_3d_plotly(placements, dl, dw, dh), width='stretch', key=f"plotly_{idx}")
-
+                    st.plotly_chart(render_3d_plotly(placements, dl, dw, dh), use_container_width=True, key=f"plotly_{idx}")
                 with tab_2d:
                     st.pyplot(fig_2d)
 
-                # Manifest Tablosu
                 report_data = []
                 for p in placements:
                     oog = calculate_oog(p.x, p.y, p.z, p.l, p.w, p.h, dl, dw, dh)
@@ -488,13 +443,11 @@ with col_main:
                 df_manifest = pd.DataFrame(report_data)
                 all_manifests.append(df_manifest)
                 
-                st.subheader(f"📋 Konteyner #{idx+1} Load Manifest & OOG Specification")
-                st.dataframe(df_manifest, width='stretch')
+                st.dataframe(df_manifest, use_container_width=True)
 
-                # PDF İndir Butonu
                 pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w, idx+1)
                 st.download_button(
-                    label=f"📄 Konteyner #{idx+1} PDF Raporu İndir",
+                    label=f"📄 Konteyner #{idx+1} PDF İndir",
                     data=pdf_data,
                     file_name=f"container_{idx+1}_manifest.pdf",
                     mime="application/pdf",
@@ -502,7 +455,6 @@ with col_main:
                 )
 
         st.markdown("---")
-        st.subheader("📥 Toplu Rapor İndir")
         excel_data = generate_excel(all_manifests, eq_type)
         st.download_button(
             label="📊 Tüm Konteynerlerin Excel Raporunu İndir (.xlsx)",
@@ -511,6 +463,3 @@ with col_main:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
-
-    else:
-        st.info("Load list is empty. Please add items from the sidebar.")
