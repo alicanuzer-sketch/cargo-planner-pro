@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import plotly.graph_objects as go
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List
 import io
 
 # ReportLab kütüphaneleri (PDF üretimi için)
@@ -55,6 +55,7 @@ class Placement:
     weight: float
     is_stackable: bool
     stack_layer: int  # Hangi kat seviyesinde durduğu
+    max_stack: int
 
 # ============================================================
 # INITIALIZE STATE
@@ -89,25 +90,22 @@ def check_stacking_validity(candidate_box, placements: List[Placement]):
     """İstifleme limitlerini ve üst üste koyma iznini denetler."""
     pt_x, pt_y, pt_z, cl, cw, ch = candidate_box
     
-    # Z=0 (Zemin) ise her zaman yerleşebilir
-    if pt_z <= 0.001:
+    # Doğrudan zemine koyuluyorsa kat 1'dir
+    if pt_z <= 0.01:
         return True, 1
 
-    # Altında kalan kutuları bul
     supporting_items = []
     for p in placements:
-        # X ve Y eksenlerinde çakışma/temas var mı?
-        overlap_x = max(0.0, min(pt_x + cl, p.x + p.l) - max(pt_x, p.x))
-        overlap_y = max(0.0, min(pt_y + cw, p.y + p.w) - max(pt_y, p.y))
+        overlap_x = min(pt_x + cl, p.x + p.l) - max(pt_x, p.x)
+        overlap_y = min(pt_y + cw, p.y + p.w) - max(pt_y, p.y)
         
-        # Tam alt yüzeyde durup durmadığını kontrol et
-        if overlap_x > 0.01 and overlap_y > 0.01 and abs((p.z + p.h) - pt_z) < 0.001:
+        # Tam alt yüzeyinde duruyor mu?
+        if overlap_x > 0.05 and overlap_y > 0.05 and abs((p.z + p.h) - pt_z) <= 0.02:
             supporting_items.append(p)
 
     if not supporting_items:
         return False, 0
 
-    # Altındaki her kargonun istiflenebilir olması ve max kat sınırını aşmaması gerekir
     max_layer_below = 0
     for item in supporting_items:
         if not item.is_stackable:
@@ -123,11 +121,10 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
     unplaced = []
     current_weight = 0.0
 
-    # İstiflenemeyen ve ağır malzemelere öncelik ver (Tabana önce koyulmaları için)
+    # İstiflenemeyen ve ağır malzemelere öncelik ver
     sorted_cargos = sorted(cargos, key=lambda c: (not c.is_stackable, c.weight, c.length * c.width * c.height), reverse=True)
 
     for cargo in sorted_cargos:
-        # Ağırlık sınırı kontrolü
         if current_weight + cargo.weight > max_w:
             unplaced.append(cargo)
             continue
@@ -154,19 +151,16 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
                 
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
                 
-                # Çakışma kontrolü
                 if any(is_overlapping(existing, candidate_box) for existing in placements):
                     continue
 
-                # İstifleme kuralı kontrolü (Max Stack & Can Stack)
                 stack_ok, layer_num = check_stacking_validity(candidate_box, placements)
                 if not stack_ok:
                     continue
 
-                # Yerleştir
                 placements.append(Placement(
                     cargo.sku, cargo.name, pt_x, pt_y, pt_z, cl, cw, cargo.height, cargo.weight,
-                    cargo.is_stackable, layer_num
+                    cargo.is_stackable, layer_num, cargo.max_stack
                 ))
                 current_weight += cargo.weight
                 placed = True
@@ -180,14 +174,12 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
     return placements, unplaced
 
 def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: float, allow_rotation=True):
-    """Sığmayan kargoları yeni konteynerlere bölen döngüsel fonksiyon."""
     containers = []
     remaining_cargos = cargos.copy()
 
     while len(remaining_cargos) > 0:
         placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, allow_rotation)
         
-        # Eğer bu konteynerde hiçbir eleman yerleştirilemediyse sonsuz döngüyü önle
         if not placements:
             st.error(f"⚠️ Şunlar hiçbir şekilde konteynere sığmıyor: {[c.name for c in unplaced]}")
             break
@@ -362,6 +354,47 @@ with col_sidebar:
 
     allow_rot = st.checkbox("Kargo Döndürmeye İzin Ver (90° Rotation)", value=True)
 
+    st.subheader("📦 Yük Listesi & Düzenleme")
+    
+    # Live Interactive Table
+    if st.session_state.c_list:
+        df_current = pd.DataFrame([
+            {
+                "SKU": c.sku,
+                "Name": c.name,
+                "Length (cm)": int(c.length * 100),
+                "Width (cm)": int(c.width * 100),
+                "Height (cm)": int(c.height * 100),
+                "Weight (kg)": c.weight,
+                "Stackable": c.is_stackable,
+                "Max Stack": c.max_stack
+            } for c in st.session_state.c_list
+        ])
+
+        edited_df = st.data_editor(
+            df_current,
+            num_rows="dynamic",
+            key="cargo_editor",
+            use_container_width=True
+        )
+
+        updated_c_list = []
+        for _, row in edited_df.iterrows():
+            if pd.notnull(row['SKU']) and str(row['SKU']).strip() != "":
+                updated_c_list.append(Cargo(
+                    sku=str(row['SKU']),
+                    name=str(row['Name']),
+                    length=float(row['Length (cm)']) / 100.0,
+                    width=float(row['Width (cm)']) / 100.0,
+                    height=float(row['Height (cm)']) / 100.0,
+                    weight=float(row['Weight (kg)']),
+                    is_stackable=bool(row['Stackable']),
+                    max_stack=int(row['Max Stack'])
+                ))
+        st.session_state.c_list = updated_c_list
+    else:
+        st.info("Liste boş. Aşağıdan kargo ekleyin.")
+
     st.subheader("📁 Toplu Yükleme (Excel/CSV)")
     uploaded_file = st.file_uploader("Kargo Listesi Yükle", type=["xlsx", "csv"])
     if uploaded_file is not None:
@@ -378,6 +411,7 @@ with col_sidebar:
                 for _, row in df_up.iterrows()
             ]
             st.success(f"✅ {len(df_up)} kargo eklendi!")
+            st.rerun()
         except Exception as e:
             st.error(f"Hata: {e}")
 
@@ -385,19 +419,19 @@ with col_sidebar:
     with st.form("cargo_form", clear_on_submit=True):
         sku = st.text_input("SKU / ID", f"{len(st.session_state.c_list) + 10}")
         name = st.text_input("Cargo Name", f"Item-{sku}")
-        c_l = st.number_input("Length (cm)", value=200) / 100.0
-        c_w = st.number_input("Width (cm)", value=100) / 100.0
-        c_h = st.number_input("Height (cm)", value=150) / 100.0
+        c_l = st.number_input("Length (cm)", value=200)
+        c_w = st.number_input("Width (cm)", value=100)
+        c_h = st.number_input("Height (cm)", value=150)
         c_wt = st.number_input("Weight (kg)", value=1000)
         
         c_stackable = st.checkbox("Üst Üste Konulabilir (Stackable)", value=True)
         c_max_stack = st.number_input("Maksimum Kat Sayısı", min_value=1, max_value=10, value=5)
         
         if st.form_submit_button("Add to Load List"):
-            st.session_state.c_list.append(Cargo(sku, name, c_l, c_w, c_h, c_wt, c_stackable, c_max_stack))
+            st.session_state.c_list.append(Cargo(sku, name, c_l/100.0, c_w/100.0, c_h/100.0, c_wt, c_stackable, c_max_stack))
             st.rerun()
 
-    if st.button("🗑️ Clear List", type="secondary"):
+    if st.button("🗑️ Tüm Listeyi Temizle", type="secondary"):
         st.session_state.c_list = []
         st.rerun()
 
@@ -413,7 +447,6 @@ with col_main:
     st.markdown(f"### 🚛 Toplam İhtiyaç Duyulan Konteyner: **{total_containers_needed} Adet** ({eq_type})")
     
     if total_containers_needed > 0:
-        # Konteynerleri sekme (Tab) halinde göster
         tab_titles = [f"📦 Konteyner #{idx+1} ({len(c)} Parça)" for idx, c in enumerate(containers)]
         container_tabs = st.tabs(tab_titles)
         
@@ -458,7 +491,7 @@ with col_main:
                 st.subheader(f"📋 Konteyner #{idx+1} Load Manifest & OOG Specification")
                 st.dataframe(df_manifest, width='stretch')
 
-                # PDF İndir Butonu (Konteynere Özel)
+                # PDF İndir Butonu
                 pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w, idx+1)
                 st.download_button(
                     label=f"📄 Konteyner #{idx+1} PDF Raporu İndir",
@@ -468,7 +501,6 @@ with col_main:
                     key=f"pdf_btn_{idx}"
                 )
 
-        # Tüm Konteynerlerin Ortak Excel Raporunu İndir Butonu
         st.markdown("---")
         st.subheader("📥 Toplu Rapor İndir")
         excel_data = generate_excel(all_manifests, eq_type)
