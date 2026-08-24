@@ -71,12 +71,12 @@ class Placement:
 HAPAG_REMARKS = {
     "Flat Rack": [
         "📌 **Lashing Points:** Tüm kargolar Hapag-Lloyd lashing gözlerine min. 5T kapasiteli şerit/zincir ile sabitlenmelidir.",
-        "📌 **OOG Clearance:** Taban genişliğini (2.43m) aşan yüklerde vinç/sapan elleçleme boşlukları dikkate alınmalıdır.",
+        "📌 **OOG Clearance:** Taban genişliğini (2.43m) aşan yüklerde vinç/sapan elleçleme boşlukları dikkate alınmalıdır (Max Taşıma Limiti: 5.00m).",
         "📌 **Weight Distribution:** Ağır kargoların ağırlık merkezi konteyner tabanının ortasına %60 oranında yayılmalıdır.",
         "📌 **Bedding Requirements:** Noktasal yüksek ağırlıkta ahşap kalas (bedding) kullanımı zorunludur."
     ],
     "Open Top": [
-        "📌 **Tarpaulin/Tente:** Yük yüksekliği profil sınırını (2.34m/2.65m) aşıyorsa tente örtülemez, OOG Top olarak bildirilmeli.",
+        "📌 **Tarpaulin/Tente:** Yük yüksekliği profil sınırını (2.34m/2.65m) aşıyorsa tente örtülemez, OOG Top olarak bildirilmeli (Max Yükseklik Limiti: 5.00m).",
         "📌 **Roof Bows:** Tente çıtaları çıkarıldığında üst yapı rijitliği azalacağı için yan duvar lashing limitleri gözetilmelidir.",
         "📌 **Door Header:** Arka kapı üst kirişi (swivel header) sökülebilir, yükleme sonrası yerine takılmalıdır."
     ]
@@ -136,6 +136,12 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
     unplaced = []
     current_weight = 0.0
 
+    MAX_OOG_WIDTH = 5.00   # Flat Rack için Maksimum En Limiti (500 cm)
+    MAX_OOG_HEIGHT = 5.00  # Tüm Üstü Açık Ekipmanlar İçin Maksimum Yükseklik Limiti (500 cm)
+
+    # Open Top için fiziki konteyner genişliği zorunlu sınırdır
+    allowed_max_w = MAX_OOG_WIDTH if is_flat_rack else dw
+
     sorted_cargos = sorted(cargos, key=lambda c: (not c.is_stackable, c.weight, c.length * c.width * c.height), reverse=True)
 
     for cargo in sorted_cargos:
@@ -143,10 +149,26 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
             unplaced.append(cargo)
             continue
 
+        # Yükseklik tavan kontrolü (500 cm)
+        if cargo.height > MAX_OOG_HEIGHT:
+            unplaced.append(cargo)
+            continue
+
         placed = False
-        orientations = [(cargo.length, cargo.width)]
+        orientations = []
+
+        # Normal Oryantasyon: Boyu dl'ye, Eni ise ekipman tipine özel teste girer
+        if cargo.length <= dl + 0.01 and cargo.width <= allowed_max_w + 0.01:
+            orientations.append((cargo.length, cargo.width))
+
+        # 90° Döndürülmüş Oryantasyon
         if allow_rotation and cargo.length != cargo.width:
-            orientations.append((cargo.width, cargo.length))
+            if cargo.width <= dl + 0.01 and cargo.length <= allowed_max_w + 0.01:
+                orientations.append((cargo.width, cargo.length))
+
+        if not orientations:
+            unplaced.append(cargo)
+            continue
 
         candidate_points = [(0.0, 0.0, 0.0)]
         for p in placements:
@@ -160,19 +182,18 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                # BOYUT KONTROLLERİ:
-                # 1. Uzunluk sınırı (dl) tüm ekipmanlarda geçerlidir.
+                # 1. Uzunluk Kontrolü (dl)
                 if pt_x + cl > dl + 0.01 and dl > 0:
                     continue
                 
-                # 2. En sınırı (dw): Flat Rack'te engel değildir (OOG olur), ancak Open Top'ta yan duvarlar olduğu için engeldir.
-                if not is_flat_rack:
-                    if pt_y + cw > dw + 0.01 and dw > 0:
-                        continue
-                
-                # NOT: Yükseklik (dh) kontrolü kaldırılmıştır! 
-                # Hem Flat Rack hem de Open Top için yükseklik aşımı yüklemeye engel olmaz, sadece OOG Top üretir.
-                
+                # 2. Genişlik Kontrolü (Flat Rack -> 5.00m, Open Top -> dw)
+                if pt_y + cw > allowed_max_w + 0.01:
+                    continue
+
+                # 3. Yükseklik Kontrolü (Tavan Sınırı -> 5.00m)
+                if pt_z + cargo.height > MAX_OOG_HEIGHT + 0.01:
+                    continue
+
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
                 if any(is_overlapping(existing, candidate_box) for existing in placements):
                     continue
@@ -203,7 +224,7 @@ def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, m
     while len(remaining_cargos) > 0:
         placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, is_flat_rack, allow_rotation)
         if not placements:
-            st.warning(f"⚠️ Dikkat: Bazı kargolar boyut/ağırlık limitleri nedeniyle yüklenemedi: {[c.name for c in unplaced]}")
+            st.warning(f"⚠️ Dikkat: Aşırı boyut (Boyut limitleri / Konteyner Boyu) ya da ağırlık limiti nedeniyle yüklenemeyen kargolar var: {[c.name for c in unplaced]}")
             break
         containers.append(placements)
         remaining_cargos = unplaced
