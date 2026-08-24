@@ -519,58 +519,113 @@ with st.expander(f"📋 Hapag-Lloyd {eq_category} Operasyonel & Lashing Notları
 # AŞAMA 3: SİMÜLASYON VE RAPORLAMA EKRANI
 # ============================================================
 if containers:
-    tab_titles = [f"📦 Konteyner #{idx+1}" for idx, c in enumerate(containers)]
-    container_tabs = st.tabs(tab_titles)
+    # Tüm konteyner manifestolarını önce hazırla (Excel raporu için)
     all_manifests = []
+    for placements_all in containers:
+        report_rows = []
+        for p in placements_all:
+            oog = calculate_oog(p.x, p.y, p.z, p.l, p.w, p.h, dl, dw, dh)
+            is_oog = "Yes" if any(v > 0 for v in oog.values()) else "No"
+            report_rows.append({
+                "SKU": p.sku,
+                "Name": p.name,
+                "X (m)": round(p.x, 2),
+                "Y (m)": round(p.y, 2),
+                "Z (m)": round(p.z, 2),
+                "Length (cm)": int(p.l * 100),
+                "Width (cm)": int(p.w * 100),
+                "Height (cm)": int(p.h * 100),
+                "Weight (kg)": p.weight,
+                "Stackable": "Yes" if p.is_stackable else "No",
+                "Layer": p.stack_layer,
+                "OOG?": is_oog,
+            })
+        all_manifests.append(pd.DataFrame(report_rows))
 
-    for idx, placements in enumerate(containers):
-        with container_tabs[idx]:
-            total_w = sum(p.weight for p in placements)
-            max_len_used = max([p.x + p.l for p in placements]) if placements else 0.0
-            len_util = (max_len_used / dl) * 100 if dl > 0 else 0
-            
-            m1, m2, m3, m4 = st.columns(4)
-            with m1: st.markdown(f'<div class="metric-card"><div class="metric-title">Uzunluk Doluluğu</div><div class="metric-value">%{len_util:.1f}</div></div>', unsafe_allow_html=True)
-            with m2: st.markdown(f'<div class="metric-card"><div class="metric-title">Toplam Yük Ağırlığı</div><div class="metric-value">{total_w:,.0f} KG</div></div>', unsafe_allow_html=True)
-            with m3: st.markdown(f'<div class="metric-card"><div class="metric-title">MAX ALLOWED PAYLOAD</div><div class="metric-value">{max_w:,.0f} KG</div></div>', unsafe_allow_html=True)
-            with m4:
-                report_data = []
-                for p in placements:
-                    oog = calculate_oog(p.x, p.y, p.z, p.l, p.w, p.h, dl, dw, dh)
-                    is_oog = "Yes" if any(v > 0 for v in oog.values()) else "No"
-                    report_data.append({
-                        "SKU": p.sku, "Name": p.name, "X (m)": round(p.x, 2), "Y (m)": round(p.y, 2), "Z (m)": round(p.z, 2),
-                        "Length (cm)": int(p.l*100), "Width (cm)": int(p.w*100), "Height (cm)": int(p.h*100),
-                        "Weight (kg)": p.weight, "Stackable": "Yes" if p.is_stackable else "No", "Layer": p.stack_layer, "OOG?": is_oog
-                    })
-                df_manifest = pd.DataFrame(report_data)
-                all_manifests.append(df_manifest)
+    # Konteyner seçici: İç içe tab yapısı yerine tek ve net seçim
+    st.markdown("### 🚢 Konteyner Yükleme Planı")
+    selected_container_no = st.selectbox(
+        "Görüntülenecek Konteyner",
+        options=list(range(1, len(containers) + 1)),
+        format_func=lambda n: f"📦 Konteyner #{n}",
+        key="selected_container_no",
+    )
 
-                try:
-                    fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
-                    pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w, idx+1, current_remarks)
-                    st.download_button(
-                        label=f"📄 Konteyner #{idx+1} PDF Raporu İndir",
-                        data=pdf_data,
-                        file_name=f"container_{idx+1}_manifest.pdf",
-                        mime="application/pdf",
-                        key=f"pdf_btn_{idx}"
-                    )
-                except Exception as e:
-                    st.error("PDF oluşturulamadı")
+    idx = selected_container_no - 1
+    placements = containers[idx]
+    df_manifest = all_manifests[idx]
 
-            st.markdown("<br>", unsafe_allow_html=True)
+    st.caption(
+        f"Toplam {len(containers)} konteyner gerekiyor. "
+        f"Şu anda Konteyner #{selected_container_no} görüntüleniyor."
+    )
 
-            v_tab1, v_tab2, v_tab3 = st.tabs(["🧊 İnteraktif 3D Yükleme Modeli", "📐 2D Teknik Çizim Paftası", "📋 Yükleme Manifestosu & Koordinatlar"])
-            
-            with v_tab1:
-                st.plotly_chart(render_3d_plotly(placements, dl, dw, dh), key=f"plotly_main_{idx}")
-            
-            with v_tab2:
-                st.pyplot(fig_2d)
+    total_w = sum(p.weight for p in placements)
+    max_len_used = max([p.x + p.l for p in placements]) if placements else 0.0
+    len_util = (max_len_used / dl) * 100 if dl > 0 else 0
 
-            with v_tab3:
-                st.dataframe(df_manifest)
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-title">Uzunluk Doluluğu</div>'
+            f'<div class="metric-value">%{len_util:.1f}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with m2:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-title">Toplam Yük Ağırlığı</div>'
+            f'<div class="metric-value">{total_w:,.0f} KG</div></div>',
+            unsafe_allow_html=True,
+        )
+    with m3:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-title">MAX ALLOWED PAYLOAD</div>'
+            f'<div class="metric-value">{max_w:,.0f} KG</div></div>',
+            unsafe_allow_html=True,
+        )
+    with m4:
+        try:
+            fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
+            pdf_data = generate_pdf(
+                df_manifest,
+                fig_2d,
+                eq_type,
+                len_util,
+                total_w,
+                selected_container_no,
+                current_remarks,
+            )
+            st.download_button(
+                label=f"📄 Konteyner #{selected_container_no} PDF Raporu İndir",
+                data=pdf_data,
+                file_name=f"container_{selected_container_no}_manifest.pdf",
+                mime="application/pdf",
+                key=f"pdf_btn_selected_{selected_container_no}",
+            )
+        except Exception as e:
+            st.error(f"PDF oluşturulamadı: {e}")
+            fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    v_tab1, v_tab2, v_tab3 = st.tabs([
+        "🧊 İnteraktif 3D Yükleme Modeli",
+        "📐 2D Teknik Çizim Paftası",
+        "📋 Yükleme Manifestosu & Koordinatlar",
+    ])
+
+    with v_tab1:
+        st.plotly_chart(
+            render_3d_plotly(placements, dl, dw, dh),
+            key=f"plotly_main_selected_{selected_container_no}",
+            use_container_width=True,
+        )
+
+    with v_tab2:
+        st.pyplot(fig_2d)
+
+    with v_tab3:
+        st.dataframe(df_manifest, use_container_width=True)
 
     st.markdown("---")
     excel_data = generate_excel(all_manifests, eq_type)
@@ -578,5 +633,5 @@ if containers:
         label="📊 Tüm Konteynerlerin Detaylı Excel Raporunu İndir (.xlsx)",
         data=excel_data,
         file_name="cargo_planner_full_manifest.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
