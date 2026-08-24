@@ -98,14 +98,14 @@ def calculate_oog(x, y, z, cl, cw, ch, dl, dw, dh):
 def is_overlapping(p1: Placement, candidate_box):
     x2, y2, z2, l2, w2, h2 = candidate_box
     return not (
-        p1.x + p1.l <= x2 + 0.001 or x2 + l2 <= p1.x + 0.001 or
-        p1.y + p1.w <= y2 + 0.001 or y2 + w2 <= p1.y + 0.001 or
-        p1.z + p1.h <= z2 + 0.001 or z2 + h2 <= p1.z + 0.001
+        p1.x + p1.l <= x2 + 0.0001 or x2 + l2 <= p1.x + 0.0001 or
+        p1.y + p1.w <= y2 + 0.0001 or y2 + w2 <= p1.y + 0.0001 or
+        p1.z + p1.h <= z2 + 0.0001 or z2 + h2 <= p1.z + 0.0001
     )
 
 def is_valid_placement(pt_x, pt_y, pt_z, cl, cw, ch, dl, dw=2.43, max_oog_width=5.0):
-    # UZUNLUK SINIRI KESİN KONTROLÜ
-    if (pt_x + cl) > dl + 0.001:
+    # KESİN UZUNLUK KONTROLÜ (1160 cm / dl değerini geçen hiçbir yerleşime izin verilmez)
+    if (pt_x + cl) > dl + 0.0001:
         return False
 
     MIN_GROUND_CONTACT_RATIO = 0.60
@@ -125,7 +125,7 @@ def is_valid_placement(pt_x, pt_y, pt_z, cl, cw, ch, dl, dw=2.43, max_oog_width=
         if y_center > MAX_Y_CENTER_LIMIT:
             return False
 
-    if (pt_y + cw) > max_oog_width + 0.001:
+    if (pt_y + cw) > max_oog_width + 0.0001:
         return False
 
     return True
@@ -175,13 +175,14 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
             continue
 
         placed = False
+        
+        # Olası oryantasyonlar
         orientations = []
-
-        if cargo.length <= dl + 0.001 and cargo.width <= allowed_max_w + 0.001:
+        if cargo.length <= dl + 0.0001 and cargo.width <= allowed_max_w + 0.0001:
             orientations.append((cargo.length, cargo.width))
 
         if allow_rotation and cargo.length != cargo.width:
-            if cargo.width <= dl + 0.001 and cargo.length <= allowed_max_w + 0.001:
+            if cargo.width <= dl + 0.0001 and cargo.length <= allowed_max_w + 0.0001:
                 orientations.append((cargo.width, cargo.length))
 
         if not orientations:
@@ -290,29 +291,34 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
         mode='lines', line=dict(color='#334155', width=4), name='Container Frame'
     ))
 
-    # DÜZELTİLMİŞ KUTU ÇİZİMİ (Mesh3d İndeksleri Düzeltildi)
+    # TAMAMEN DÜZELTİLMİŞ KÜP KÖŞE VEYA YÜZEY İNDEKS HARİTASI
     for idx, p in enumerate(placements):
         c_color = colors[idx % len(colors)]
-        
+
+        # 8 Adet Köşe Noktası
         x_pts = [p.x, p.x+p.l, p.x+p.l, p.x, p.x, p.x+p.l, p.x+p.l, p.x]
         y_pts = [p.y, p.y, p.y+p.w, p.y+p.w, p.y, p.y, p.y+p.w, p.y+p.w]
         z_pts = [p.z, p.z, p.z, p.z, p.z+p.h, p.z+p.h, p.z+p.h, p.z+p.h]
 
+        # Küpü oluşturan 12 adet standart üçgen yüzey indeksi
+        i_ind = [0, 0, 4, 4, 0, 0, 3, 3, 0, 1, 1, 2]
+        j_ind = [1, 2, 5, 6, 1, 5, 2, 6, 3, 2, 5, 6]
+        k_ind = [2, 3, 6, 7, 5, 4, 6, 7, 7, 6, 6, 7]
+
         fig.add_trace(go.Mesh3d(
             x=x_pts, y=y_pts, z=z_pts,
-            i=[7, 0, 0, 0, 4, 4, 2, 6, 4, 0, 3, 7],
-            j=[3, 4, 1, 2, 5, 6, 3, 7, 0, 1, 2, 6],
-            k=[0, 7, 5, 3, 6, 7, 7, 5, 1, 5, 6, 2],
+            i=i_ind, j=j_ind, k=k_ind,
             color=c_color, opacity=0.85, name=f"SKU {p.sku}: {p.name}",
+            flatshading=True,
             hoverinfo="text",
             hovertext=f"<b>{p.name}</b> (SKU: {p.sku})<br>Boyut: {p.l:.2f} x {p.w:.2f} x {p.h:.2f} m<br>Ağırlık: {p.weight} kg"
         ))
 
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title='Uzunluk / X (m)'),
-            yaxis=dict(title='Genişlik / Y (m)'),
-            zaxis=dict(title='Yükseklik / Z (m)'),
+            xaxis=dict(title='Uzunluk / X (m)', range=[0, max(dl, 12)]),
+            yaxis=dict(title='Genişlik / Y (m)', range=[0, 5]),
+            zaxis=dict(title='Yükseklik / Z (m)', range=[0, 5]),
             aspectmode='data'
         ),
         margin=dict(l=0, r=0, b=0, t=10), height=550
