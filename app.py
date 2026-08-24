@@ -5,6 +5,13 @@ import matplotlib.patches as patches
 import plotly.graph_objects as go
 from dataclasses import dataclass
 from typing import List
+import io
+
+# ReportLab kütüphaneleri (PDF üretimi için)
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors as rl_colors
 
 # ============================================================
 # CONFIG & STYLE
@@ -58,7 +65,7 @@ if 'c_list' not in st.session_state:
     ]
 
 # ============================================================
-# ADVANCED 3D BIN PACKING ENGINE (Yan Yana & Üst Üste Dizilim)
+# PACKING ENGINE
 # ============================================================
 def calculate_oog(x, y, z, cl, cw, ch, dl, dw, dh):
     return {
@@ -78,40 +85,33 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, allow_ro
     placements: List[Placement] = []
     unplaced = []
 
-    # Hacme göre büyükten küçüğe sırala
     sorted_cargos = sorted(cargos, key=lambda c: (c.length * c.width * c.height), reverse=True)
 
     for cargo in sorted_cargos:
         placed = False
-        # Olası döndürme durumları (Normal veya 90 derece yatay döndürülmüş)
         orientations = [(cargo.length, cargo.width)]
         if allow_rotation and cargo.length != cargo.width:
             orientations.append((cargo.width, cargo.length))
 
-        # Arama Noktaları (Extreme Points)
         candidate_points = [(0.0, 0.0, 0.0)]
         for p in placements:
             candidate_points.extend([
-                (p.x + p.l, p.y, p.z),       # X ekseni boyunca ilerisi
-                (p.x, p.y + p.w, p.z),       # Y ekseni boyunca yan tarafı
-                (p.x, p.y, p.z + p.h),       # Z ekseni boyunca üstü
+                (p.x + p.l, p.y, p.z),
+                (p.x, p.y + p.w, p.z),
+                (p.x, p.y, p.z + p.h),
             ])
 
-        # Noktaları Z, X, Y sırasına göre sırala (Önce tabana ve en geriye yerleştir)
         candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[2], pt[0], pt[1]))
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                # Sınır kontrolü (Taban genişliğini aşmasın)
                 if pt_y + cw > dw + 0.01 and dw > 0:
                     continue
                 
-                # Çakışma kontrolü
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
                 if any(is_overlapping(existing, candidate_box) for existing in placements):
                     continue
 
-                # Uygun yer bulundu
                 placements.append(Placement(
                     cargo.sku, cargo.name, pt_x, pt_y, pt_z, cl, cw, cargo.height, cargo.weight
                 ))
@@ -126,27 +126,71 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, allow_ro
     return placements, unplaced
 
 # ============================================================
+# REPORT GENERATION FUNCTIONS (PDF & EXCEL)
+# ============================================================
+def generate_excel(df_report, eq_type, len_util, total_w):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_summary = pd.DataFrame([{
+            "Equipment": eq_type,
+            "Length Utilization (%)": round(len_util, 1),
+            "Total Cargo Weight (kg)": total_w
+        }])
+        df_summary.to_excel(writer, sheet_name='Summary', index=False)
+        df_report.to_excel(writer, sheet_name='Load Manifest', index=False)
+    return output.getvalue()
+
+def generate_pdf(df_report, eq_type, len_util, total_w):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story = []
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=18, leading=22, textColor=rl_colors.HexColor('#0068C9'))
+    
+    story.append(Paragraph("Project Logistics Loading Report", title_style))
+    story.append(Spacer(1, 10))
+    
+    # Özet Bilgiler
+    summary_text = f"<b>Equipment:</b> {eq_type} | <b>Length Utilization:</b> {len_util:.1f}% | <b>Total Weight:</b> {total_w:,.0f} kg"
+    story.append(Paragraph(summary_text, styles['Normal']))
+    story.append(Spacer(1, 15))
+    
+    # Manifest Tablosu
+    table_data = [df_report.columns.tolist()] + df_report.values.tolist()
+    t = Table(table_data)
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), rl_colors.HexColor('#0068C9')),
+        ('TEXTCOLOR', (0,0), (-1,0), rl_colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 9),
+        ('BOTTOMPADDING', (0,0), (-1,0), 6),
+        ('BACKGROUND', (0,1), (-1,-1), rl_colors.HexColor('#F8F9FA')),
+        ('GRID', (0,0), (-1,-1), 0.5, rl_colors.grey),
+        ('FONTSIZE', (0,1), (-1,-1), 8),
+    ]))
+    story.append(t)
+    
+    doc.build(story)
+    return buffer.getvalue()
+
+# ============================================================
 # PLOTLY 3D RENDER ENGINE
 # ============================================================
 def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: float):
     fig = go.Figure()
     colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
 
-    # 1. Ekipman Taban/Çerçeve Çizgileri
     fig.add_trace(go.Scatter3d(
         x=[0, dl, dl, 0, 0, 0, dl, dl, 0, 0, 0, 0, dl, dl, dl, dl],
         y=[0, 0, dw, dw, 0, 0, 0, dw, dw, 0, dw, dw, dw, 0, 0, dw],
         z=[0, 0, 0, 0, 0, dh, dh, dh, dh, dh, 0, dh, dh, dh, 0, 0],
-        mode='lines',
-        line=dict(color='gray', width=4),
-        name='Container Wireframe',
-        hoverinfo='none'
+        mode='lines', line=dict(color='gray', width=4), name='Container Wireframe', hoverinfo='none'
     ))
 
-    # 2. Kargoları 3D Mesh (Prizma) Olarak Çizme
     for idx, p in enumerate(placements):
         c_color = colors[idx % len(colors)]
-        
         x_pts = [p.x, p.x+p.l, p.x+p.l, p.x, p.x, p.x+p.l, p.x+p.l, p.x]
         y_pts = [p.y, p.y, p.y+p.w, p.y+p.w, p.y, p.y, p.y+p.w, p.y+p.w]
         z_pts = [p.z, p.z, p.z, p.z, p.z+p.h, p.z+p.h, p.z+p.h, p.z+p.h]
@@ -156,13 +200,10 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
             i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2],
             j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
             k=[0, 7, 5, 3, 6, 7, 1, 1, 1, 5, 7, 7],
-            color=c_color,
-            opacity=0.8,
-            name=f"SKU {p.sku}: {p.name}",
+            color=c_color, opacity=0.8, name=f"SKU {p.sku}: {p.name}",
             hoverinfo="text",
             hovertext=(
-                f"<b>{p.name}</b><br>"
-                f"SKU: {p.sku}<br>"
+                f"<b>{p.name}</b><br>SKU: {p.sku}<br>"
                 f"Konum (X,Y,Z): ({p.x:.2f}, {p.y:.2f}, {p.z:.2f}) m<br>"
                 f"Boyut (BxGxY): {p.l:.2f} x {p.w:.2f} x {p.h:.2f} m<br>"
                 f"Ağırlık: {p.weight:,.0f} kg"
@@ -176,8 +217,7 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
             zaxis=dict(title='Yükseklik / Z (m)', backgroundcolor="rgb(240, 240, 240)"),
             aspectmode='data'
         ),
-        margin=dict(l=0, r=0, b=0, t=30),
-        height=550
+        margin=dict(l=0, r=0, b=0, t=30), height=550
     )
     return fig
 
@@ -235,7 +275,6 @@ with col_sidebar:
 with col_main:
     placements, unplaced = pack_cargo_3d(st.session_state.c_list, dl, dw, dh, allow_rotation=allow_rot)
     
-    # Bilgi Kartları
     c1, c2, c3, c4 = st.columns(4)
     total_w = sum(p.weight for p in placements)
     max_len_used = max([p.x + p.l for p in placements]) if placements else 0.0
@@ -256,27 +295,23 @@ with col_main:
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12))
             colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
 
-            ax1.set_title("TOP VIEW (Üstten Görünüm - Genişlik Taşması / Overwidth)", fontsize=11, fontweight='bold')
+            ax1.set_title("TOP VIEW (Üstten Görünüm)", fontsize=11, fontweight='bold')
             ax1.add_patch(patches.Rectangle((0, 0), dl, dw, color='lightgray', alpha=0.4))
             
-            ax2.set_title("SIDE VIEW (Yandan Görünüm - Yükseklik Taşması / Overheight)", fontsize=11, fontweight='bold')
+            ax2.set_title("SIDE VIEW (Yandan Görünüm)", fontsize=11, fontweight='bold')
             ax2.add_patch(patches.Rectangle((0, 0), dl, dh, color='lightgray', alpha=0.4))
             
-            ax3.set_title("FRONT VIEW (Önden Görünüm - Genişlik & Yükseklik Taşma Detayı)", fontsize=11, fontweight='bold')
+            ax3.set_title("FRONT VIEW (Önden Görünüm)", fontsize=11, fontweight='bold')
             ax3.add_patch(patches.Rectangle((0, 0), dw, dh, color='lightgray', alpha=0.4))
 
             for idx, p in enumerate(placements):
                 c_color = colors[idx % len(colors)]
-
-                # Top View
                 ax1.add_patch(patches.Rectangle((p.x, p.y), p.l, p.w, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.5))
                 ax1.text(p.x + p.l/2, p.y + p.w/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=9)
 
-                # Side View
                 ax2.add_patch(patches.Rectangle((p.x, p.z), p.l, p.h, edgecolor='black', facecolor=c_color, alpha=0.7, linewidth=1.5))
                 ax2.text(p.x + p.l/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='white', fontweight='bold', fontsize=9)
 
-                # Front View
                 ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, edgecolor='black', facecolor='none', linestyle='--', linewidth=1.5))
                 ax3.add_patch(patches.Rectangle((p.y, p.z), p.w, p.h, facecolor=c_color, alpha=0.4))
                 ax3.text(p.y + p.w/2, p.z + p.h/2, f"SKU {p.sku}", ha='center', va='center', color='black', fontweight='bold', fontsize=9)
@@ -304,7 +339,34 @@ with col_main:
                 "Weight (kg)": p.weight, "OOG?": is_oog
             })
 
+        df_manifest = pd.DataFrame(report_data)
         st.subheader("📋 Load Manifest & OOG Specification")
-        st.dataframe(pd.DataFrame(report_data), width='stretch')
+        st.dataframe(df_manifest, width='stretch')
+
+        # 📥 İNDİRME BUTONLARI (PDF & EXCEL)
+        st.subheader("📥 Rapor İndir")
+        col_dl1, col_dl2 = st.columns(2)
+
+        excel_data = generate_excel(df_manifest, eq_type, len_util, total_w)
+        pdf_data = generate_pdf(df_manifest, eq_type, len_util, total_w)
+
+        with col_dl1:
+            st.download_button(
+                label="📊 Excel Raporu İndir (.xlsx)",
+                data=excel_data,
+                file_name="load_manifest.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+        with col_dl2:
+            st.download_button(
+                label="📄 PDF Raporu İndir (.pdf)",
+                data=pdf_data,
+                file_name="load_manifest.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+
     else:
         st.info("Load list is empty. Please add items from the sidebar.")
