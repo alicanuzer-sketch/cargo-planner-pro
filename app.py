@@ -134,7 +134,7 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
     MAX_OOG_WIDTH = 5.00 if is_flat_rack else dw
     MAX_OOG_HEIGHT = 5.00 if is_flat_rack else dh
 
-    # Kargoları Hacim ve Ağırlığa göre sırala
+    # Kargoları Hacim/Uzunluğa göre sırala
     sorted_cargos = sorted(cargos, key=lambda c: (c.length * c.width * c.height, c.weight), reverse=True)
 
     for cargo in sorted_cargos:
@@ -157,20 +157,14 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
             continue
 
         for cl, cw in orientations:
-            # 1. Y-EKSEENİ SIMETRİK ORTALAMA HESABI (OOG Genişlik için)
+            # Y-Ekseninde OOG simetrik ortalama
             if cw > dw:
-                # Tabanı aşan kargoyu konteynerin Y ekseninde tam ortala
                 y_positions = [(dw - cw) / 2.0]
             else:
                 y_positions = [0.0]
 
-            # 2. X-EKSENİ AĞIRLIK MERKEZİ HESABI
-            # Ağır kargo için öncelikli yerleştirme noktası (Taban ortası)
-            start_x_offset = 0.0
-            if cargo.weight > (max_w * 0.4) and cl < (dl * 0.9):
-                start_x_offset = (dl - cl) / 2.0
-
-            candidate_points = [(start_x_offset, y_pos, 0.0) for y_pos in y_positions] + [(0.0, y_pos, 0.0) for y_pos in y_positions]
+            # Aday noktaları oluştur (Sadece kesin geçerli sınır noktalar)
+            candidate_points = [(0.0, y_pos, 0.0) for y_pos in y_positions]
             
             for p in placements:
                 for y_pos in y_positions:
@@ -181,18 +175,22 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
                     if cw <= dw and (p.y + p.w) <= dw:
                         candidate_points.append((p.x, p.y + p.w, p.z))
 
-            candidate_points = sorted(set(candidate_points), key=lambda pt: (pt[0], pt[1], pt[2]))
+            # X koordinatına göre küçükten büyüğe sırala (Aksı sıfırdan doldurmak için)
+            candidate_points = sorted(list(set(candidate_points)), key=lambda pt: (pt[0], pt[1], pt[2]))
 
             for pt_x, pt_y, pt_z in candidate_points:
-                # KATI X SIFIR VE SON SINIR KONTROLÜ
-                if pt_x < 0.0 or round(pt_x + cl, 4) > round(dl, 4):
+                # KESİN UZUNLUK SINIRI KONTROLÜ (X + cl asla dl'yi geçemez!)
+                if pt_x < 0.0 or (pt_x + cl) > (dl + 0.0001):
                     continue
 
-                # KATI OOG GENİŞLİK ÇAKIŞMA KONTROLÜ
-                # Mevcut veya yeni kargolardan herhangi biri OOG genişlikteyse aynı X hizasını paylaşamazlar
+                # KESİN ÇAKIŞMA KONTROLÜ (3D Box Overlap)
+                candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
+                if any(is_overlapping(existing, candidate_box) for existing in placements):
+                    continue
+
+                # OOG Genişlik Çakışma Kontrolü (Geniş kargo varsa yanına başka kargo konamaz)
                 conflict = False
                 for p in placements:
-                    # X ekseninde çakışıyorlar mı?
                     overlap_x = min(pt_x + cl, p.x + p.l) - max(pt_x, p.x)
                     if overlap_x > 0.001:
                         if cw > dw or p.w > dw:
@@ -200,10 +198,6 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
                             break
 
                 if conflict:
-                    continue
-
-                candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
-                if any(is_overlapping(existing, candidate_box) for existing in placements):
                     continue
 
                 stack_ok, layer_num = check_stacking_validity(candidate_box, placements)
@@ -223,6 +217,15 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         if not placed:
             unplaced.append(cargo)
+
+    # Eğer tek bir kargo kaldıysa ve çok ağırsa onu tabanın ortasına kaydır
+    if len(placements) == 1 and placements[0].l < dl:
+        p0 = placements[0]
+        centered_x = (dl - p0.l) / 2.0
+        placements[0] = Placement(
+            p0.sku, p0.name, centered_x, p0.y, p0.z, p0.l, p0.w, p0.h, p0.weight,
+            p0.is_stackable, p0.stack_layer, p0.max_stack
+        )
 
     return placements, unplaced
 
