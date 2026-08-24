@@ -181,6 +181,12 @@ if 'c_list' not in st.session_state:
         Cargo("11", "item 2", 10.23, 3.15, 2.65, 24800, False, 1)
     ]
 
+# st.data_editor keeps its own edit/delete state. Whenever the table structure
+# changes (row added/deleted), rotate the widget key so stale deleted_rows /
+# added_rows state cannot bring an old cargo row back on the next rerun.
+if 'cargo_editor_revision' not in st.session_state:
+    st.session_state.cargo_editor_revision = 0
+
 # ============================================================
 # PACKING ENGINE & HELPER FUNCTIONS
 # ============================================================
@@ -680,12 +686,19 @@ with st.expander("📦 Kargo Listesini Düzenle / Yeni Ekle / Excel Yükle", exp
                 } for c in st.session_state.c_list
             ])
 
+            editor_key = f"main_cargo_editor_{st.session_state.cargo_editor_revision}"
             edited_df = st.data_editor(
                 df_current,
                 num_rows="dynamic",
-                key="main_cargo_editor",
+                key=editor_key,
                 height=230
             )
+
+            # Detect structural changes before rebuilding the canonical cargo list.
+            # This is especially important for row deletion: the data editor stores
+            # deleted row indices in its own widget state, so reusing the same key
+            # after the source DataFrame changes can make a deleted row reappear.
+            structure_changed = len(edited_df) != len(df_current)
 
             updated_c_list = []
             for _, row in edited_df.iterrows():
@@ -700,7 +713,14 @@ with st.expander("📦 Kargo Listesini Düzenle / Yeni Ekle / Excel Yükle", exp
                         is_stackable=bool(row['Stackable']),
                         max_stack=int(row['Max Stack'])
                     ))
+
             st.session_state.c_list = updated_c_list
+
+            if structure_changed:
+                # Persist the new row structure first, then rebuild the editor with
+                # a fresh widget identity. This makes delete/add a one-action event.
+                st.session_state.cargo_editor_revision += 1
+                st.rerun()
 
     with col_add:
         st.markdown("##### ➕ Hızlı Tek Kargo Ekle")
@@ -719,6 +739,7 @@ with st.expander("📦 Kargo Listesini Düzenle / Yeni Ekle / Excel Yükle", exp
             
             if st.form_submit_button("Listeye Ekle"):
                 st.session_state.c_list.append(Cargo(f_sku, f_name, f_l/100.0, f_w/100.0, f_h/100.0, f_wt, f_stack, 5))
+                st.session_state.cargo_editor_revision += 1
                 st.rerun()
 
         uploaded_file = st.file_uploader("Veya Excel/CSV Dosyası Yükle", type=["xlsx", "csv"])
@@ -735,6 +756,7 @@ with st.expander("📦 Kargo Listesini Düzenle / Yeni Ekle / Excel Yükle", exp
                     )
                     for _, row in df_up.iterrows()
                 ]
+                st.session_state.cargo_editor_revision += 1
                 st.success("Excel başarıyla aktarıldı!")
                 st.rerun()
             except Exception as e:
