@@ -149,7 +149,8 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                if pt_y + cw > dw + 0.01 and dw > 0:
+                # KONTEYNER BOYUT SINIRI KONTROLÜ (Uzunluk ve Genişlik Taşamaz)
+                if (pt_x + cl > dl + 0.01 and dl > 0) or (pt_y + cw > dw + 0.01 and dw > 0):
                     continue
                 
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
@@ -470,16 +471,19 @@ if containers:
                 df_manifest = pd.DataFrame(report_data)
                 all_manifests.append(df_manifest)
 
-                fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
-                pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w, idx+1)
-                
-                st.download_button(
-                    label=f"📄 Konteyner #{idx+1} PDF Raporu İndir",
-                    data=pdf_data,
-                    file_name=f"container_{idx+1}_manifest.pdf",
-                    mime="application/pdf",
-                    key=f"pdf_btn_{idx}"
-                )
+                # PDF ÜRETİMİ VE İNDİRME BUTONU (GÜNCELLENDİ)
+                try:
+                    fig_2d = create_2d_figure(placements, dl, dw, dh, max_len_used)
+                    pdf_data = generate_pdf(df_manifest, fig_2d, eq_type, len_util, total_w, idx+1)
+                    st.download_button(
+                        label=f"📄 Konteyner #{idx+1} PDF Raporu İndir",
+                        data=pdf_data,
+                        file_name=f"container_{idx+1}_manifest.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_btn_{idx}"
+                    )
+                except Exception as e:
+                    st.error("PDF oluşturulamadı")
 
             st.markdown("<br>", unsafe_allow_html=True)
 
