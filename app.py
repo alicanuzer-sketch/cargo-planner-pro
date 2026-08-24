@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import List
 import io
 
-# ReportLab kütüphaneleri (PDF üretimi için)
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -39,7 +38,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Header
 st.title("🚢 Cargo Planner Pro - Yükleme Simülasyonu")
 st.caption("Endüstriyel Özel Ekipman (Flat Rack & Open Top) Yük Planlama ve 3D Görselleştirme")
 
@@ -82,9 +80,6 @@ HAPAG_REMARKS = {
     ]
 }
 
-# ============================================================
-# INITIALIZE STATE
-# ============================================================
 if 'c_list' not in st.session_state:
     st.session_state.c_list = [
         Cargo("10", "item 1", 2.00, 1.00, 1.50, 1000, False, 1),
@@ -100,41 +95,37 @@ def calculate_oog(x, y, z, cl, cw, ch, dl, dw, dh):
         "left": max(0.0, -y), "right": max(0.0, (y + cw) - dw), "top": max(0.0, (z + ch) - dh)
     }
 
-def is_overlapping(p1: Placement, p2_bounds):
-    x2, y2, z2, l2, w2, h2 = p2_bounds
+def is_overlapping(p1: Placement, candidate_box):
+    x2, y2, z2, l2, w2, h2 = candidate_box
     return not (
-        p1.x + p1.l <= x2 or x2 + l2 <= p1.x or
-        p1.y + p1.w <= y2 or y2 + w2 <= p1.y or
-        p1.z + p1.h <= z2 or z2 + h2 <= p1.z
+        p1.x + p1.l <= x2 + 0.001 or x2 + l2 <= p1.x + 0.001 or
+        p1.y + p1.w <= y2 + 0.001 or y2 + w2 <= p1.y + 0.001 or
+        p1.z + p1.h <= z2 + 0.001 or z2 + h2 <= p1.z + 0.001
     )
 
-def is_valid_placement(pt_x, pt_y, pt_z, cl, cw, ch, dw=2.43, max_oog_width=5.0):
-    """
-    Flat Rack ve Open Top yüklemelerinde kargonun fiziki ve statik emniyetini kontrol eder.
-    """
-    MIN_GROUND_CONTACT_RATIO = 0.60  # Yükün en az %60'ı tabana basmalı
-    MAX_Y_CENTER_LIMIT = 2.00        # Ağırlık merkezi maks. 2.00m aksında kalmalı
+def is_valid_placement(pt_x, pt_y, pt_z, cl, cw, ch, dl, dw=2.43, max_oog_width=5.0):
+    # UZUNLUK SINIRI KESİN KONTROLÜ
+    if (pt_x + cl) > dl + 0.001:
+        return False
+
+    MIN_GROUND_CONTACT_RATIO = 0.60
+    MAX_Y_CENTER_LIMIT = 2.00
 
     if pt_z <= 0.01:
-        # KURAL 1: Kargo fiziki taban dışında (havada) başlayamaz
         if pt_y >= dw:
             return False
 
-        # KURAL 2: Tabana Oturma / Temas Oranı Kontrolü (Min %60)
         ground_contact_width = max(0.0, min(pt_y + cw, dw) - pt_y)
         contact_ratio = ground_contact_width / cw
         
         if contact_ratio < MIN_GROUND_CONTACT_RATIO:
             return False
 
-        # KURAL 3: Ağırlık Merkezi (Center of Gravity) Kontrolü
         y_center = pt_y + (cw / 2.0)
-        
         if y_center > MAX_Y_CENTER_LIMIT:
             return False
 
-    # MAKSİMUM TAŞMA (OOG) LİMİT KONTROLÜ
-    if (pt_y + cw) > max_oog_width + 0.01:
+    if (pt_y + cw) > max_oog_width + 0.001:
         return False
 
     return True
@@ -167,8 +158,8 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
     unplaced = []
     current_weight = 0.0
 
-    MAX_OOG_WIDTH = 5.00   # Flat Rack için Maksimum En Limiti (500 cm)
-    MAX_OOG_HEIGHT = 5.00  # Tüm Üstü Açık Ekipmanlar İçin Maksimum Yükseklik Limiti (500 cm)
+    MAX_OOG_WIDTH = 5.00
+    MAX_OOG_HEIGHT = 5.00
 
     allowed_max_w = MAX_OOG_WIDTH if is_flat_rack else dw
 
@@ -186,11 +177,11 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
         placed = False
         orientations = []
 
-        if cargo.length <= dl + 0.01 and cargo.width <= allowed_max_w + 0.01:
+        if cargo.length <= dl + 0.001 and cargo.width <= allowed_max_w + 0.001:
             orientations.append((cargo.length, cargo.width))
 
         if allow_rotation and cargo.length != cargo.width:
-            if cargo.width <= dl + 0.01 and cargo.length <= allowed_max_w + 0.01:
+            if cargo.width <= dl + 0.001 and cargo.length <= allowed_max_w + 0.001:
                 orientations.append((cargo.width, cargo.length))
 
         if not orientations:
@@ -209,24 +200,13 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                # 1. Uzunluk Kontrolü
-                if pt_x + cl > dl + 0.01 and dl > 0:
-                    continue
-                
-                # 2. Yükseklik Kontrolü
-                if pt_z + cargo.height > MAX_OOG_HEIGHT + 0.01:
+                if not is_valid_placement(pt_x, pt_y, pt_z, cl, cw, cargo.height, dl=dl, dw=dw, max_oog_width=allowed_max_w):
                     continue
 
-                # 3. EMNİYET, TABAN TEMASI (%60) VE AĞIRLIK MERKEZİ (2.00m) KONTROLÜ
-                if not is_valid_placement(pt_x, pt_y, pt_z, cl, cw, cargo.height, dw=dw, max_oog_width=allowed_max_w):
-                    continue
-
-                # 4. Çakışma Kontrolü
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
                 if any(is_overlapping(existing, candidate_box) for existing in placements):
                     continue
 
-                # 5. Üst Üste İstifleme Kontrolü
                 stack_ok, layer_num = check_stacking_validity(candidate_box, placements)
                 if not stack_ok:
                     continue
@@ -253,7 +233,7 @@ def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, m
     while len(remaining_cargos) > 0:
         placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, is_flat_rack, allow_rotation)
         if not placements:
-            st.warning(f"⚠️ Dikkat: Aşırı boyut (Boyut limitleri / Konteyner Boyu) ya da ağırlık limiti nedeniyle yüklenemeyen kargolar var: {[c.name for c in unplaced]}")
+            st.warning(f"⚠️ Sığmayan / Limit Aşan Kargolar 2. Konteynere Aktarılamadı: {[c.name for c in unplaced]}")
             break
         containers.append(placements)
         remaining_cargos = unplaced
@@ -302,24 +282,27 @@ def render_3d_plotly(placements: List[Placement], dl: float, dw: float, dh: floa
     fig = go.Figure()
     colors = ['#0068C9', '#FF4B4B', '#29B09D', '#774294', '#FF8700', '#00D4FF', '#E63946', '#457B9D']
 
+    # Konteyner Tabanı Çerçevesi
     fig.add_trace(go.Scatter3d(
         x=[0, dl, dl, 0, 0, 0, dl, dl, 0, 0, 0, 0, dl, dl, dl, dl],
         y=[0, 0, dw, dw, 0, 0, 0, dw, dw, 0, dw, dw, dw, 0, 0, dw],
         z=[0, 0, 0, 0, 0, dh, dh, dh, dh, dh, 0, dh, dh, dh, 0, 0],
-        mode='lines', line=dict(color='#334155', width=5), name='Container Base'
+        mode='lines', line=dict(color='#334155', width=4), name='Container Frame'
     ))
 
+    # DÜZELTİLMİŞ KUTU ÇİZİMİ (Mesh3d İndeksleri Düzeltildi)
     for idx, p in enumerate(placements):
         c_color = colors[idx % len(colors)]
+        
         x_pts = [p.x, p.x+p.l, p.x+p.l, p.x, p.x, p.x+p.l, p.x+p.l, p.x]
         y_pts = [p.y, p.y, p.y+p.w, p.y+p.w, p.y, p.y, p.y+p.w, p.y+p.w]
         z_pts = [p.z, p.z, p.z, p.z, p.z+p.h, p.z+p.h, p.z+p.h, p.z+p.h]
 
         fig.add_trace(go.Mesh3d(
             x=x_pts, y=y_pts, z=z_pts,
-            i=[7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2],
-            j=[3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3],
-            k=[0, 7, 5, 3, 6, 7, 1, 1, 1, 5, 7, 7],
+            i=[7, 0, 0, 0, 4, 4, 2, 6, 4, 0, 3, 7],
+            j=[3, 4, 1, 2, 5, 6, 3, 7, 0, 1, 2, 6],
+            k=[0, 7, 5, 3, 6, 7, 7, 5, 1, 5, 6, 2],
             color=c_color, opacity=0.85, name=f"SKU {p.sku}: {p.name}",
             hoverinfo="text",
             hovertext=f"<b>{p.name}</b> (SKU: {p.sku})<br>Boyut: {p.l:.2f} x {p.w:.2f} x {p.h:.2f} m<br>Ağırlık: {p.weight} kg"
@@ -498,7 +481,6 @@ with ctrl1:
     
     is_flat_rack = "Flat Rack" in eq_type
 
-    # Hapag-Lloyd Net Yük Kapasiteleri
     if eq_type == "20ft Flat Rack":
         dl, dw, dh, max_w = 5.50, 2.43, 2.20, 31000.0
     elif eq_type == "40ft Standard Flat Rack":
