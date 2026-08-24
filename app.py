@@ -68,26 +68,53 @@ class Placement:
 
 HAPAG_REMARKS = {
     "Flat Rack": [
-        "📌 **Lashing Points:** Tüm kargolar Hapag-Lloyd lashing gözlerine min. 5T kapasiteli şerit/zincir ile sabitlenmelidir.",
-        "📌 **OOG Clearance:** Taban genişliğini (2.43m) aşan yüklerde vinç/sapan elleçleme boşlukları dikkate alınmalıdır (Max Taşıma Limiti: 5.00m).",
-        "📌 **Weight Distribution:** Ağır kargoların ağırlık merkezi konteyner tabanının ortasına %60 oranında yayılmalıdır.",
-        "📌 **Bedding Requirements:** Noktasal yüksek ağırlıkta ahşap kalas (bedding) kullanımı zorunludur."
+        "📌 **Planning Length Rule:** 20' FR için 5.50 m, 40' FR / 40' HC FR için 11.60 m üzerindeki parça otomatik olarak uygun değildir.",
+        "📌 **OOG Width:** 2.43 m taban genişliğini aşan yükler Enden Taşmalı (OOG Width) olarak raporlanır; taban temas oranı ayrıca kontrol edilir.",
+        "📌 **OOG Height:** Ekipmanın gauge/dikme yüksekliğini aşan yükler Üstten Taşmalı (OOG Top) olarak raporlanır; yalnızca yükseklik nedeniyle reddedilmez.",
+        "📌 **Planning Support Rule:** Zemine oturan FR yüklerinde minimum %60 taban temas oranı aranır.",
     ],
     "Open Top": [
-        "📌 **Tarpaulin/Tente:** Yük yüksekliği profil sınırını (2.34m/2.65m) aşıyorsa tente örtülemez, OOG Top olarak bildirilmeli (Max Yükseklik Limiti: 5.00m).",
-        "📌 **Roof Bows:** Tente çıtaları çıkarıldığında üst yapı rijitliği azalacağı için yan duvar lashing limitleri gözetilmelidir.",
-        "📌 **Door Header:** Arka kapı üst kirişi (swivel header) sökülebilir, yükleme sonrası yerine takılmalıdır."
+        "📌 **Top Loading Access:** Her tek parça, seçilen OT'nin roof opening uzunluk ve genişliğinden üstten geçebilmelidir.",
+        "📌 **Multi-piece Stowage:** Roof opening yalnızca giriş limitidir; parçalar içeri alındıktan sonra internal floor alanında nihai pozisyonlarına yerleştirilebilir.",
+        "📌 **OOG Height:** Gauge yüksekliğini aşmak yüklemeyi engellemez; aşım yalnızca Top OOG olarak raporlanır.",
+        "📌 **Loading/Lashing Sequence:** Çok parçalı OT planı, parçaların sırayla yüklenip pozisyonlandıktan sonra lash edilmesi varsayımıyla hazırlanır.",
     ]
 }
 
-
+# Planning limits. OT internal floor values are conservative rounded-down values
+# derived from Hapag-Lloyd example equipment dimensions; roof/door/payload limits
+# follow the user-defined planning limits.
 EQUIPMENT_PROFILES = {
-    "20ft Flat Rack": {"dl": 5.50, "dw": 2.43, "dh": 2.20, "max_w": 31000.0, "is_flat_rack": True},
-    "40ft Standard Flat Rack": {"dl": 11.60, "dw": 2.43, "dh": 1.92, "max_w": 39000.0, "is_flat_rack": True},
-    "40ft High Cube Flat Rack": {"dl": 11.60, "dw": 2.43, "dh": 2.25, "max_w": 39000.0, "is_flat_rack": True},
-    "20ft Standard Open Top": {"dl": 5.33, "dw": 2.23, "dh": 2.34, "max_w": 28100.0, "is_flat_rack": False},
-    "40ft Standard Open Top": {"dl": 11.55, "dw": 2.23, "dh": 2.34, "max_w": 26500.0, "is_flat_rack": False},
-    "40ft High Cube Open Top": {"dl": 11.55, "dw": 2.19, "dh": 2.65, "max_w": 26200.0, "is_flat_rack": False},
+    "20ft Flat Rack": {
+        "dl": 5.50, "dw": 2.43, "dh": 2.20, "max_w": 42000.0,
+        "is_flat_rack": True,
+    },
+    "40ft Standard Flat Rack": {
+        "dl": 11.60, "dw": 2.43, "dh": 1.92, "max_w": 39000.0,
+        "is_flat_rack": True,
+    },
+    "40ft High Cube Flat Rack": {
+        "dl": 11.60, "dw": 2.43, "dh": 2.25, "max_w": 39000.0,
+        "is_flat_rack": True,
+    },
+    "20ft Standard Open Top": {
+        "dl": 5.89, "dw": 2.35, "dh": 2.34, "max_w": 30000.0,
+        "is_flat_rack": False,
+        "roof_l": 5.33, "roof_w": 2.23,
+        "door_w": 2.33, "door_h": 2.28,
+    },
+    "40ft Standard Open Top": {
+        "dl": 12.02, "dw": 2.35, "dh": 2.34, "max_w": 28000.0,
+        "is_flat_rack": False,
+        "roof_l": 11.55, "roof_w": 2.23,
+        "door_w": 2.34, "door_h": 2.27,
+    },
+    "40ft High Cube Open Top": {
+        "dl": 12.02, "dw": 2.35, "dh": 2.65, "max_w": 28000.0,
+        "is_flat_rack": False,
+        "roof_l": 11.55, "roof_w": 2.19,
+        "door_w": 2.35, "door_h": 2.57,
+    },
 }
 
 SECONDARY_EQUIPMENT_PRIORITY = [
@@ -125,8 +152,7 @@ def fit_group_to_equipment(placements: List[Placement], eq_name: str, allow_rota
     group_cargos = placements_to_cargos(placements)
     repacked, unplaced = pack_cargo_3d(
         group_cargos,
-        profile["dl"], profile["dw"], profile["dh"], profile["max_w"],
-        is_flat_rack=profile["is_flat_rack"],
+        profile,
         allow_rotation=allow_rotation,
     )
     fits_all = len(unplaced) == 0 and len(repacked) == len(group_cargos)
@@ -151,10 +177,15 @@ if 'c_list' not in st.session_state:
 # PACKING ENGINE & HELPER FUNCTIONS
 # ============================================================
 def calculate_oog(x, y, z, cl, cw, ch, dl, dw, dh):
+    """OOG is measured against the equipment planning gauge / deck envelope."""
     return {
-        "front": max(0.0, -x), "rear": max(0.0, (x + cl) - dl),
-        "left": max(0.0, -y), "right": max(0.0, (y + cw) - dw), "top": max(0.0, (z + ch) - dh)
+        "front": max(0.0, -x),
+        "rear": max(0.0, (x + cl) - dl),
+        "left": max(0.0, -y),
+        "right": max(0.0, (y + cw) - dw),
+        "top": max(0.0, (z + ch) - dh),
     }
+
 
 def is_overlapping(p1: Placement, candidate_box):
     x2, y2, z2, l2, w2, h2 = candidate_box
@@ -163,6 +194,7 @@ def is_overlapping(p1: Placement, candidate_box):
         p1.y + p1.w <= y2 + 0.0001 or y2 + w2 <= p1.y + 0.0001 or
         p1.z + p1.h <= z2 + 0.0001 or z2 + h2 <= p1.z + 0.0001
     )
+
 
 def check_stacking_validity(candidate_box, placements: List[Placement]):
     pt_x, pt_y, pt_z, cl, cw, ch = candidate_box
@@ -187,87 +219,164 @@ def check_stacking_validity(candidate_box, placements: List[Placement]):
 
     return True, max_layer_below + 1
 
-def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: float, is_flat_rack: bool = True, allow_rotation=True):
+
+def flat_rack_floor_support_ok(y_start: float, cargo_width: float, deck_width: float = 2.43):
+    """User-defined FR planning safety rules for cargo resting directly on the deck."""
+    y_end = y_start + cargo_width
+
+    # Rule 3: cargo must actually intersect the physical deck.
+    if not (y_start < deck_width and y_end > 0.0):
+        return False
+
+    contact_width = max(0.0, min(y_end, deck_width) - max(y_start, 0.0))
+    contact_ratio = contact_width / cargo_width if cargo_width > 0 else 0.0
+
+    # Rule 1: minimum 60% of cargo width supported by the deck.
+    if contact_ratio + 1e-9 < 0.60:
+        return False
+
+    # Rule 2 as supplied: cargo transverse center must be <= 2.00 m.
+    y_center = y_start + cargo_width / 2.0
+    if y_center > 2.00 + 1e-9:
+        return False
+
+    return True
+
+
+def orientation_allowed_for_equipment(cl: float, cw: float, profile: dict):
+    """Check whether one cargo orientation can physically enter/use this equipment."""
+    if profile["is_flat_rack"]:
+        # HARD RULE: no FR cargo may exceed the usable deck length.
+        # Width/height may be OOG, subject to support checks during placement.
+        return cl <= profile["dl"] + 0.0001
+
+    # Open Top: every individual piece must pass through the roof opening.
+    roof_l = profile["roof_l"]
+    roof_w = profile["roof_w"]
+    return cl <= roof_l + 0.0001 and cw <= roof_w + 0.0001
+
+
+def pack_cargo_3d(cargos: List[Cargo], profile: dict, allow_rotation=True):
     placements: List[Placement] = []
     unplaced = []
     current_weight = 0.0
 
-    MAX_OOG_WIDTH = 5.00 if is_flat_rack else dw
-    MAX_OOG_HEIGHT = 5.00 if is_flat_rack else dh
+    dl = profile["dl"]          # FR usable deck length / OT internal floor length
+    dw = profile["dw"]          # FR deck width / OT internal floor width
+    max_w = profile["max_w"]
+    is_flat_rack = profile["is_flat_rack"]
 
-    # Kargoları Hacim/Uzunluğa göre sırala
-    sorted_cargos = sorted(cargos, key=lambda c: (c.length * c.width * c.height, c.weight), reverse=True)
+    # Larger / heavier items first.
+    sorted_cargos = sorted(
+        cargos,
+        key=lambda c: (c.length * c.width * c.height, c.weight),
+        reverse=True,
+    )
 
     for cargo in sorted_cargos:
-        if current_weight + cargo.weight > max_w or cargo.height > MAX_OOG_HEIGHT:
+        # Height is intentionally NOT a rejection criterion for FR or OT.
+        # It is reported later as Top OOG against profile["dh"].
+        if current_weight + cargo.weight > max_w + 0.0001:
             unplaced.append(cargo)
             continue
 
         placed = False
         orientations = []
-        
-        if cargo.length <= dl + 0.0001 and cargo.width <= MAX_OOG_WIDTH + 0.0001:
-            orientations.append((cargo.length, cargo.width))
 
-        if allow_rotation and cargo.length != cargo.width:
-            if cargo.width <= dl + 0.0001 and cargo.length <= MAX_OOG_WIDTH + 0.0001:
-                orientations.append((cargo.width, cargo.length))
+        raw_orientations = [(cargo.length, cargo.width)]
+        if allow_rotation and abs(cargo.length - cargo.width) > 0.0001:
+            raw_orientations.append((cargo.width, cargo.length))
+
+        for cl, cw in raw_orientations:
+            if orientation_allowed_for_equipment(cl, cw, profile):
+                # avoid duplicate orientation pairs
+                if not any(abs(cl-a) < 1e-6 and abs(cw-b) < 1e-6 for a, b in orientations):
+                    orientations.append((cl, cw))
 
         if not orientations:
             unplaced.append(cargo)
             continue
 
         for cl, cw in orientations:
-            # Y-Ekseninde OOG simetrik ortalama
-            if cw > dw:
-                y_positions = [(dw - cw) / 2.0]
+            if is_flat_rack:
+                # OOG-width cargo is centered on deck. In-gauge cargo may start at Y=0
+                # and may also use side-by-side candidate positions below.
+                if cw > dw:
+                    y_positions = [(dw - cw) / 2.0]
+                else:
+                    y_positions = [0.0]
             else:
+                # OT final position uses the INTERNAL floor, not the roof opening.
+                # Every cargo has already passed the roof-opening test above.
                 y_positions = [0.0]
 
-            # Aday noktaları oluştur (Sadece kesin geçerli sınır noktalar)
             candidate_points = [(0.0, y_pos, 0.0) for y_pos in y_positions]
-            
+
             for p in placements:
                 for y_pos in y_positions:
                     candidate_points.extend([
                         (p.x + p.l, y_pos, p.z),
                         (p.x, y_pos, p.z + p.h),
                     ])
-                    if cw <= dw and (p.y + p.w) <= dw:
+
+                    # side-by-side candidate inside the physical deck/floor
+                    if cw <= dw:
                         candidate_points.append((p.x, p.y + p.w, p.z))
 
-            # X koordinatına göre küçükten büyüğe sırala (Aksı sıfırdan doldurmak için)
-            candidate_points = sorted(list(set(candidate_points)), key=lambda pt: (pt[0], pt[1], pt[2]))
+            candidate_points = sorted(
+                list(set(candidate_points)),
+                key=lambda pt: (pt[0], pt[1], pt[2]),
+            )
 
             for pt_x, pt_y, pt_z in candidate_points:
-                # KESİN UZUNLUK SINIRI KONTROLÜ (X + cl asla dl'yi geçemez!)
-                if pt_x < 0.0 or (pt_x + cl) > (dl + 0.0001):
+                # STRICT FINAL X BOUNDARY:
+                # FR cannot use overlength space at all; OT final cargo must stay in internal floor length.
+                if pt_x < -0.0001 or (pt_x + cl) > (dl + 0.0001):
                     continue
 
-                # KESİN ÇAKIŞMA KONTROLÜ (3D Box Overlap)
+                # OT final position must remain within the internal floor width.
+                if not is_flat_rack:
+                    if pt_y < -0.0001 or (pt_y + cw) > (dw + 0.0001):
+                        continue
+
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
+
                 if any(is_overlapping(existing, candidate_box) for existing in placements):
                     continue
 
-                # OOG Genişlik Çakışma Kontrolü (Geniş kargo varsa yanına başka kargo konamaz)
-                conflict = False
-                for p in placements:
-                    overlap_x = min(pt_x + cl, p.x + p.l) - max(pt_x, p.x)
-                    if overlap_x > 0.001:
-                        if cw > dw or p.w > dw:
+                # FR deck-support rules apply to cargo sitting directly on the deck.
+                if is_flat_rack and pt_z <= 0.01:
+                    if not flat_rack_floor_support_ok(pt_y, cw, dw):
+                        continue
+
+                # If one FR cargo is overwidth, another cargo may not occupy the same X span beside it.
+                if is_flat_rack:
+                    conflict = False
+                    for p in placements:
+                        overlap_x = min(pt_x + cl, p.x + p.l) - max(pt_x, p.x)
+                        if overlap_x > 0.001 and (cw > dw or p.w > dw):
                             conflict = True
                             break
-
-                if conflict:
-                    continue
+                    if conflict:
+                        continue
 
                 stack_ok, layer_num = check_stacking_validity(candidate_box, placements)
                 if not stack_ok:
                     continue
 
                 placements.append(Placement(
-                    cargo.sku, cargo.name, pt_x, pt_y, pt_z, cl, cw, cargo.height, cargo.weight,
-                    cargo.is_stackable, layer_num, cargo.max_stack
+                    cargo.sku,
+                    cargo.name,
+                    pt_x,
+                    pt_y,
+                    pt_z,
+                    cl,
+                    cw,
+                    cargo.height,
+                    cargo.weight,
+                    cargo.is_stackable,
+                    layer_num,
+                    cargo.max_stack,
                 ))
                 current_weight += cargo.weight
                 placed = True
@@ -279,23 +388,33 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
         if not placed:
             unplaced.append(cargo)
 
-    # ÖNEMLİ: X ekseninde otomatik merkezleme YOK.
-    # Her konteynerde ilk yerleşen kargo X=0.0'dan başlar.
-    # Bir yük diğer yüklerle aynı konteynere sığmıyorsa unplaced listesine gider
-    # ve pack_multi_container() tarafından sonraki konteynere aktarılır.
-
+    # No automatic X-centering. Each container starts packing from X=0.
     return placements, unplaced
 
-def pack_multi_container(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: float, is_flat_rack: bool = True, allow_rotation=True):
+
+def pack_multi_container(cargos: List[Cargo], profile: dict, allow_rotation=True):
     containers = []
     remaining_cargos = cargos.copy()
 
-    while len(remaining_cargos) > 0:
-        placements, unplaced = pack_cargo_3d(remaining_cargos, dl, dw, dh, max_w, is_flat_rack, allow_rotation)
+    while remaining_cargos:
+        placements, unplaced = pack_cargo_3d(
+            remaining_cargos,
+            profile,
+            allow_rotation=allow_rotation,
+        )
+
         if not placements:
-            st.error(f"⚠️ Konteynere Sığmayan Yükler: {[c.name for c in unplaced]}")
+            st.error(
+                "⚠️ Seçili ekipmana yüklenemeyen yük(ler): "
+                + ", ".join(f"{c.sku} - {c.name}" for c in unplaced)
+            )
             break
+
         containers.append(placements)
+
+        # Safety guard against an accidental infinite loop.
+        if len(unplaced) >= len(remaining_cargos):
+            break
         remaining_cargos = unplaced
 
     return containers
@@ -546,6 +665,12 @@ with ctrl1:
     dh = primary_profile["dh"]
     max_w = primary_profile["max_w"]
     is_flat_rack = primary_profile["is_flat_rack"]
+    if not is_flat_rack:
+        st.caption(
+            f"Roof opening: {primary_profile['roof_l']:.2f} × {primary_profile['roof_w']:.2f} m | "
+            f"Internal floor: {primary_profile['dl']:.2f} × {primary_profile['dw']:.2f} m | "
+            f"Gauge height: {primary_profile['dh']:.2f} m"
+        )
 
 with ctrl2:
     allow_rot = st.checkbox("🔄 Kargoları 90° Döndürmeye İzin Ver", value=False)
@@ -557,9 +682,15 @@ with ctrl2:
     )
     st.caption("Örn. kalan yük 20' OT'a tamamen sığıyorsa 40HC FR yerine 20' OT önerilir.")
 
+    st.caption(
+        "OT çoklu parça planında her parçanın roof opening'den geçtiği ve içeride nihai pozisyonuna "
+        "kaydırılabildiği varsayılır; loading-path/lashing erişim simülasyonu henüz ayrı bir kontrol değildir."
+    )
+
 base_containers = pack_multi_container(
-    st.session_state.c_list, dl, dw, dh, max_w,
-    is_flat_rack=is_flat_rack, allow_rotation=allow_rot
+    st.session_state.c_list,
+    primary_profile,
+    allow_rotation=allow_rot,
 )
 
 containers = []
@@ -644,6 +775,9 @@ if containers:
                 "Stackable": "Yes" if p.is_stackable else "No",
                 "Layer": p.stack_layer,
                 "OOG?": is_oog,
+                "OOG Left (cm)": round(oog["left"] * 100, 1),
+                "OOG Right (cm)": round(oog["right"] * 100, 1),
+                "OOG Top (cm)": round(oog["top"] * 100, 1),
             })
         all_manifests.append(pd.DataFrame(report_rows))
 
