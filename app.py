@@ -108,6 +108,37 @@ def is_overlapping(p1: Placement, p2_bounds):
         p1.z + p1.h <= z2 or z2 + h2 <= p1.z
     )
 
+def is_valid_placement(pt_x, pt_y, pt_z, cl, cw, ch, dw=2.43, max_oog_width=5.0):
+    """
+    Flat Rack ve Open Top yüklemelerinde kargonun fiziki ve statik emniyetini kontrol eder.
+    """
+    MIN_GROUND_CONTACT_RATIO = 0.60  # Yükün en az %60'ı tabana basmalı
+    MAX_Y_CENTER_LIMIT = 2.00        # Ağırlık merkezi maks. 2.00m aksında kalmalı
+
+    if pt_z <= 0.01:
+        # KURAL 1: Kargo fiziki taban dışında (havada) başlayamaz
+        if pt_y >= dw:
+            return False
+
+        # KURAL 2: Tabana Oturma / Temas Oranı Kontrolü (Min %60)
+        ground_contact_width = max(0.0, min(pt_y + cw, dw) - pt_y)
+        contact_ratio = ground_contact_width / cw
+        
+        if contact_ratio < MIN_GROUND_CONTACT_RATIO:
+            return False
+
+        # KURAL 3: Ağırlık Merkezi (Center of Gravity) Kontrolü
+        y_center = pt_y + (cw / 2.0)
+        
+        if y_center > MAX_Y_CENTER_LIMIT:
+            return False
+
+    # MAKSİMUM TAŞMA (OOG) LİMİT KONTROLÜ
+    if (pt_y + cw) > max_oog_width + 0.01:
+        return False
+
+    return True
+
 def check_stacking_validity(candidate_box, placements: List[Placement]):
     pt_x, pt_y, pt_z, cl, cw, ch = candidate_box
     if pt_z <= 0.01:
@@ -139,7 +170,6 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
     MAX_OOG_WIDTH = 5.00   # Flat Rack için Maksimum En Limiti (500 cm)
     MAX_OOG_HEIGHT = 5.00  # Tüm Üstü Açık Ekipmanlar İçin Maksimum Yükseklik Limiti (500 cm)
 
-    # Open Top için fiziki konteyner genişliği zorunlu sınırdır
     allowed_max_w = MAX_OOG_WIDTH if is_flat_rack else dw
 
     sorted_cargos = sorted(cargos, key=lambda c: (not c.is_stackable, c.weight, c.length * c.width * c.height), reverse=True)
@@ -149,7 +179,6 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
             unplaced.append(cargo)
             continue
 
-        # Yükseklik tavan kontrolü (500 cm)
         if cargo.height > MAX_OOG_HEIGHT:
             unplaced.append(cargo)
             continue
@@ -157,11 +186,9 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
         placed = False
         orientations = []
 
-        # Normal Oryantasyon: Boyu dl'ye, Eni ise ekipman tipine özel teste girer
         if cargo.length <= dl + 0.01 and cargo.width <= allowed_max_w + 0.01:
             orientations.append((cargo.length, cargo.width))
 
-        # 90° Döndürülmüş Oryantasyon
         if allow_rotation and cargo.length != cargo.width:
             if cargo.width <= dl + 0.01 and cargo.length <= allowed_max_w + 0.01:
                 orientations.append((cargo.width, cargo.length))
@@ -182,22 +209,24 @@ def pack_cargo_3d(cargos: List[Cargo], dl: float, dw: float, dh: float, max_w: f
 
         for pt_x, pt_y, pt_z in candidate_points:
             for cl, cw in orientations:
-                # 1. Uzunluk Kontrolü (dl)
+                # 1. Uzunluk Kontrolü
                 if pt_x + cl > dl + 0.01 and dl > 0:
                     continue
                 
-                # 2. Genişlik Kontrolü (Flat Rack -> 5.00m, Open Top -> dw)
-                if pt_y + cw > allowed_max_w + 0.01:
-                    continue
-
-                # 3. Yükseklik Kontrolü (Tavan Sınırı -> 5.00m)
+                # 2. Yükseklik Kontrolü
                 if pt_z + cargo.height > MAX_OOG_HEIGHT + 0.01:
                     continue
 
+                # 3. EMNİYET, TABAN TEMASI (%60) VE AĞIRLIK MERKEZİ (2.00m) KONTROLÜ
+                if not is_valid_placement(pt_x, pt_y, pt_z, cl, cw, cargo.height, dw=dw, max_oog_width=allowed_max_w):
+                    continue
+
+                # 4. Çakışma Kontrolü
                 candidate_box = (pt_x, pt_y, pt_z, cl, cw, cargo.height)
                 if any(is_overlapping(existing, candidate_box) for existing in placements):
                     continue
 
+                # 5. Üst Üste İstifleme Kontrolü
                 stack_ok, layer_num = check_stacking_validity(candidate_box, placements)
                 if not stack_ok:
                     continue
